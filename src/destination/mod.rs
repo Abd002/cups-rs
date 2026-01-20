@@ -15,6 +15,7 @@ use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::{c_int, c_uint, c_void};
 use std::ptr;
+use crate::{HttpConnection, IppRequest, IppOperation, IppTag, IppValueTag};
 
 pub type DestCallback<T> = dyn FnMut(u32, &Destination, &mut T) -> bool;
 
@@ -29,6 +30,19 @@ pub struct Destination {
     pub is_default: bool,
     /// Options and attributes for this destination
     pub options: HashMap<String, String>,
+}
+
+#[derive(Clone, Copy)]
+pub enum AttrKind {
+    StringLike,
+    IntegerLike,
+    Boolean,
+}
+
+#[derive(Clone, Copy)]
+pub struct AttrSpec<'a> {
+    pub name: &'a str,
+    pub kind: AttrKind,
 }
 
 impl Destination {
@@ -374,6 +388,77 @@ impl Destination {
 
         // Leak the box to keep the memory alive
         Box::into_raw(dest)
+    }
+
+    /// Fetch and populate missing attributes from the printer via IPP
+    pub fn get_attrs(&mut self, conn: &HttpConnection, attrs: &[AttrSpec<'_>]) -> Result<()> {
+        let missing: Vec<AttrSpec<'_>> = attrs
+            .iter()
+            .copied()
+            .filter(|a| !self.options.contains_key(a.name))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let uri = match self.options.get("printer-uri-supported") {
+            Some(u) => u.as_str(),
+            None => return Ok(()),
+        };
+
+        // Build GetPrinterAttributes
+        let mut req = IppRequest::new(IppOperation::GetPrinterAttributes)?;
+        req.add_string(IppTag::Operation, IppValueTag::Uri, "printer-uri", uri)?;
+
+        // requested-attributes by names
+        let names: Vec<&str> = missing.iter().map(|a| a.name).collect();
+        req.add_strings(
+            IppTag::Operation,
+            IppValueTag::Keyword,
+            "requested-attributes",
+            &names,
+        )?;
+
+        // post
+        let resp = req.send(conn, "/")?;
+        if !resp.is_successful() {
+            return Err(Error::ServerError(format!(
+                "Get-Printer-Attributes failed: {:?}",
+                resp.status()
+            )));
+        }
+
+        for spec in missing {
+            let Some(attr) = resp.find_attribute(spec.name, None) else {
+                continue;
+            };
+
+            let mut vals: Vec<String> = Vec::new();
+            for i in 0..attr.count() {
+                match spec.kind {
+                    AttrKind::StringLike => {
+                        if let Some(s) = attr.get_string(i) {
+                            let s = s.trim().to_string();
+                            if !s.is_empty() {
+                                vals.push(s);
+                            }
+                        }
+                    }
+                    AttrKind::IntegerLike => {
+                        vals.push(attr.get_integer(i).to_string());
+                    }
+                    AttrKind::Boolean => {
+                        vals.push(if attr.get_boolean(i) { "true" } else { "false" }.to_string());
+                    }
+                }
+            }
+
+            if !vals.is_empty() {
+                self.options.insert(spec.name.to_string(), vals.join(","));
+            }
+        }
+
+        Ok(())
     }
 }
 

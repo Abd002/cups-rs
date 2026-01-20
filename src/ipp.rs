@@ -320,7 +320,7 @@ impl IppRequest {
         let name_c = CString::new(name)?;
 
         let attr = unsafe {
-            bindings::ippAddBoolean(self.ipp, group.into(), name_c.as_ptr(), value as i8)
+            bindings::ippAddBoolean(self.ipp, group.into(), name_c.as_ptr(), value as ::std::os::raw::c_char)
         };
 
         if attr.is_null() {
@@ -347,7 +347,7 @@ impl IppRequest {
             .map(|v| CString::new(*v).map_err(Error::from))
             .collect::<Result<Vec<_>>>()?;
 
-        let values_ptrs: Vec<*const i8> = values_c.iter().map(|s| s.as_ptr()).collect();
+        let values_ptrs: Vec<*const ::std::os::raw::c_char> = values_c.iter().map(|s| s.as_ptr()).collect();
 
         let attr = unsafe {
             bindings::ippAddStrings(
@@ -376,7 +376,9 @@ impl IppRequest {
         let resource_c = CString::new(resource)?;
 
         // Note: cupsDoRequest frees the request, so we need to create a copy
-        let request_copy = unsafe { bindings::ippNew() };
+        // Create a new request with the same operation code as the original
+        let operation = unsafe { bindings::ippGetOperation(self.ipp) };
+        let request_copy = unsafe { bindings::ippNewRequest(operation) };
         if request_copy.is_null() {
             return Err(Error::UnsupportedFeature(
                 "Failed to copy IPP request".to_string(),
@@ -384,6 +386,7 @@ impl IppRequest {
         }
 
         unsafe {
+            // Copy all attributes from the original request to the new one
             bindings::ippCopyAttributes(request_copy, self.ipp, 0, None, ptr::null_mut());
         }
 
