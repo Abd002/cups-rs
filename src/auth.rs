@@ -266,7 +266,7 @@ pub fn do_authentication(
         )
     };
 
-    if result != 0 {
+    if result {
         Ok(())
     } else {
         Err(Error::AuthenticationFailed(format!(

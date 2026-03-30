@@ -43,7 +43,6 @@ impl DestinationInfo {
 
         unsafe {
             bindings::cupsCheckDestSupported(http, dest, self.dinfo, option_c.as_ptr(), ptr::null())
-                != 0
         }
     }
 
@@ -72,7 +71,7 @@ impl DestinationInfo {
                 self.dinfo,
                 option_c.as_ptr(),
                 value_c.as_ptr(),
-            ) != 0
+            )
         }
     }
 
@@ -106,7 +105,7 @@ impl DestinationInfo {
             )
         };
 
-        if result == 0 {
+        if result {
             Err(Error::MediaSizeError(format!(
                 "Media '{}' not found",
                 media
@@ -141,7 +140,7 @@ impl DestinationInfo {
             )
         };
 
-        if result == 0 {
+        if result {
             Err(Error::MediaSizeError(format!(
                 "Media with width={} and length={} not found",
                 width, length
@@ -173,7 +172,7 @@ impl DestinationInfo {
             bindings::cupsGetDestMediaByIndex(http, dest, self.dinfo, index, flags, &mut size)
         };
 
-        if result == 0 {
+        if result {
             Err(Error::MediaSizeError(format!(
                 "Media at index {} not found",
                 index
@@ -203,7 +202,7 @@ impl DestinationInfo {
         let result =
             unsafe { bindings::cupsGetDestMediaDefault(http, dest, self.dinfo, flags, &mut size) };
 
-        if result == 0 {
+        if result {
             Err(Error::MediaSizeError("Default media not found".to_string()))
         } else {
             unsafe { MediaSize::from_cups_size(&size) }
@@ -463,7 +462,7 @@ impl DestinationInfo {
 
             // If not an integer, try as boolean
             let bool_value = bindings::ippGetBoolean(default_attr, 0);
-            Ok(Some(if bool_value != 0 {
+            Ok(Some(if bool_value {
                 "true".to_string()
             } else {
                 "false".to_string()
@@ -513,7 +512,7 @@ impl DestinationInfo {
 
                 // If not an integer, try as boolean
                 let bool_value = bindings::ippGetBoolean(supported_attr, i);
-                supported_values.push(if bool_value != 0 {
+                supported_values.push(if bool_value {
                     "true".to_string()
                 } else {
                     "false".to_string()

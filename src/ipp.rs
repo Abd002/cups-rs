@@ -384,7 +384,7 @@ impl IppRequest {
         }
 
         unsafe {
-            bindings::ippCopyAttributes(request_copy, self.ipp, 0, None, ptr::null_mut());
+            bindings::ippCopyAttributes(request_copy, self.ipp, false, None, ptr::null_mut());
         }
 
         let response = unsafe {
@@ -548,7 +548,7 @@ impl IppAttribute {
 
     /// Get a boolean value
     pub fn get_boolean(&self, index: usize) -> bool {
-        unsafe { bindings::ippGetBoolean(self.attr, index as i32) != 0 }
+        unsafe { bindings::ippGetBoolean(self.attr, index as i32) }
     }
 }
 

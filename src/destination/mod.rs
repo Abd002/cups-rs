@@ -77,7 +77,7 @@ impl Destination {
         Ok(Destination {
             name,
             instance,
-            is_default: dest.is_default != 0,
+            is_default: dest.is_default,
             options,
         })
     }
@@ -190,7 +190,7 @@ impl Destination {
                 Some(s) => s.into_raw(),
                 None => ptr::null_mut(),
             },
-            is_default: if self.is_default { 1 } else { 0 },
+            is_default: self.is_default,
             num_options,
             options: options_ptr,
         };
@@ -280,7 +280,7 @@ impl Destination {
                         Some(s) => s.into_raw(),
                         None => ptr::null_mut(),
                     },
-                    is_default: if self.is_default { 1 } else { 0 },
+                    is_default: self.is_default,
                     num_options,
                     options: options_ptr,
                 };
@@ -367,7 +367,7 @@ impl Destination {
                 Some(s) => s.into_raw(),
                 None => ptr::null_mut(),
             },
-            is_default: if self.is_default { 1 } else { 0 },
+            is_default: self.is_default,
             num_options,
             options: options_ptr,
         });
@@ -442,7 +442,7 @@ impl Destinations {
         for i in 0..all_dests.num_dests as isize {
             unsafe {
                 let dest = &*(all_dests.dests.offset(i));
-                if dest.is_default != 0 {
+                if dest.is_default {
                     return Destination::from_raw(all_dests.dests.offset(i));
                 }
             }
@@ -605,7 +605,7 @@ impl Destinations {
             )
         };
 
-        if result == 0 {
+        if !result {
             Ok(())
         } else {
             Err(Error::ConfigurationError(
@@ -879,7 +879,7 @@ pub fn enum_destinations<T>(
         )
     };
 
-    if result == 0 {
+    if !result {
         Err(Error::EnumerationError(
             "Failed to enumerate destinations".to_string(),
         ))
@@ -899,7 +899,7 @@ unsafe extern "C" fn enum_dest_callback<T>(
     user_data: *mut c_void,
     flags: c_uint,
     dest_ptr: *mut bindings::cups_dest_s,
-) -> c_int {
+) -> bool {
     // Reconstruct our context
     let context = unsafe { &mut *(user_data as *mut EnumContext<T>) };
 
@@ -909,14 +909,14 @@ unsafe extern "C" fn enum_dest_callback<T>(
             Ok(dest) => {
                 // Call the user's callback
                 if (context.callback)(flags, &dest, context.user_data) {
-                    1 // Continue enumeration
+                    true // Continue enumeration
                 } else {
-                    0 // Stop enumeration
+                    false // Stop enumeration
                 }
             }
             Err(e) => {
                 eprintln!("Warning: Failed to parse destination: {}", e);
-                1 // Continue enumeration despite error
+                true // Continue enumeration despite error
             }
         }
     }
