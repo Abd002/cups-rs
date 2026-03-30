@@ -35,7 +35,7 @@ impl Job {
             Ok(())
         } else {
             let error_msg = unsafe {
-                let error_ptr = bindings::cupsLastErrorString();
+                let error_ptr = bindings::cupsGetError();
                 if error_ptr.is_null() {
                     "Unknown CUPS error".to_string()
                 } else {
@@ -78,7 +78,7 @@ impl Job {
             Ok(())
         } else {
             let error_msg = unsafe {
-                let error_ptr = bindings::cupsLastErrorString();
+                let error_ptr = bindings::cupsGetError();
                 if error_ptr.is_null() {
                     "Unknown CUPS error".to_string()
                 } else {

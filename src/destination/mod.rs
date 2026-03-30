@@ -598,7 +598,7 @@ impl Destinations {
     /// - `Err(Error)`: Failed to save destinations
     pub fn save_to_lpoptions(&self) -> Result<()> {
         let result = unsafe {
-            bindings::cupsSetDests2(
+            bindings::cupsSetDests(
                 ptr::null_mut(), // Use CUPS_HTTP_DEFAULT
                 self.num_dests,
                 self.dests,

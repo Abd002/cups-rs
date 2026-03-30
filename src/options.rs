@@ -287,7 +287,7 @@ pub fn encode_options_with_group(
     }
 
     unsafe {
-        bindings::cupsEncodeOptions2(
+        bindings::cupsEncodeOptions(
             ipp,
             cups_options.len() as c_int,
             cups_options.as_mut_ptr(),

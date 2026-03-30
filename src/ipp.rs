@@ -480,11 +480,11 @@ impl IppResponse {
     /// Get all attributes in the response
     pub fn attributes(&self) -> Vec<IppAttribute> {
         let mut attributes = Vec::new();
-        let mut attr = unsafe { bindings::ippFirstAttribute(self.ipp) };
+        let mut attr = unsafe { bindings::ippGetFirstAttribute(self.ipp) };
 
         while !attr.is_null() {
             attributes.push(IppAttribute { attr });
-            attr = unsafe { bindings::ippNextAttribute(self.ipp) };
+            attr = unsafe { bindings::ippGetNextAttribute(self.ipp) };
         }
 
         attributes
