@@ -200,6 +200,7 @@ impl Destination {
             bindings::cupsCopyDestInfo(
                 http,
                 &dest as *const bindings::cups_dest_s as *mut bindings::cups_dest_s,
+                0,
             )
         };
 
@@ -398,7 +399,7 @@ impl Destinations {
     /// Get all available destinations from the default CUPS server
     pub fn get_all() -> Result<Self> {
         let mut dests: *mut bindings::cups_dest_s = ptr::null_mut();
-        let num_dests = unsafe { bindings::cupsGetDests(&mut dests) };
+        let num_dests = unsafe { bindings::cupsGetDests(ptr::null_mut(), &mut dests) };
 
         if num_dests <= 0 || dests.is_null() {
             return Err(Error::DestinationListFailed);

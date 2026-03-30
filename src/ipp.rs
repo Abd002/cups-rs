@@ -313,14 +313,8 @@ impl IppRequest {
     pub fn add_boolean(&mut self, group: IppTag, name: &str, value: bool) -> Result<()> {
         let name_c = CString::new(name)?;
 
-        let attr = unsafe {
-            bindings::ippAddBoolean(
-                self.ipp,
-                group.into(),
-                name_c.as_ptr(),
-                value as ::std::os::raw::c_char,
-            )
-        };
+        let attr =
+            unsafe { bindings::ippAddBoolean(self.ipp, group.into(), name_c.as_ptr(), value) };
 
         if attr.is_null() {
             Err(Error::UnsupportedFeature(format!(

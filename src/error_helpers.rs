@@ -5,7 +5,7 @@ use std::ffi::CStr;
 pub fn get_cups_error_details() -> (i32, String) {
     unsafe {
         let error_code = bindings::cupsGetError();
-        let error_msg = bindings::cupsGetError();
+        let error_msg = bindings::cupsGetErrorString();
 
         let message = if error_msg.is_null() {
             "Unknown CUPS error".to_string()

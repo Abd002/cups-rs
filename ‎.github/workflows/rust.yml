@@ -6,20 +6,56 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+
+    env:
+      LIBCUPS_PREFIX: /opt/libcups3
+      PKG_CONFIG_PATH: /opt/libcups3/lib/pkgconfig:/opt/libcups3/lib64/pkgconfig
+      BINDGEN_EXTRA_CLANG_ARGS: -I/opt/libcups3/include
+      LD_LIBRARY_PATH: /opt/libcups3/lib:/opt/libcups3/lib64
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install deps
+      - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcups2-dev
+          sudo apt-get install -y \
+            autoconf \
+            build-essential \
+            clang \
+            git \
+            libavahi-client-dev \
+            libnss-mdns \
+            libpng-dev \
+            libssl-dev \
+            pkg-config \
+            zlib1g-dev
+
+      - name: Build and install libcups 3
+        run: |
+          git clone --depth 1 --branch v3.0.0 --recurse-submodules https://github.com/OpenPrinting/libcups.git /tmp/libcups
+          cd /tmp/libcups
+          ./configure --prefix="${LIBCUPS_PREFIX}"
+          make -j"$(nproc)"
+          sudo make install
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Show toolchain and pkg-config
+        run: |
+          rustc -V
+          cargo -V
+          pkg-config --modversion cups3
+          pkg-config --cflags cups3
+          pkg-config --libs cups3
+
       - name: Format check
         run: cargo fmt --all -- --check
+
+      - name: Build
+        run: cargo build --all-targets -vv
 
       - name: Tests
         run: cargo test --all -- --nocapture
