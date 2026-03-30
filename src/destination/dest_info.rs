@@ -155,7 +155,7 @@ impl DestinationInfo {
         &self,
         http: *mut bindings::_http_s,
         dest: *mut bindings::cups_dest_s,
-        index: i32,
+        index: usize,
         flags: u32,
     ) -> Result<MediaSize> {
         let mut size = bindings::cups_size_s {
@@ -215,7 +215,7 @@ impl DestinationInfo {
         http: *mut bindings::_http_s,
         dest: *mut bindings::cups_dest_s,
         flags: u32,
-    ) -> i32 {
+    ) -> usize {
         unsafe { bindings::cupsGetDestMediaCount(http, dest, self.dinfo, flags) }
     }
 

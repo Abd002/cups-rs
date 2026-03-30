@@ -15,6 +15,7 @@ use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::{c_int, c_uint, c_void};
 use std::ptr;
+use std::usize;
 
 pub type DestCallback<T> = dyn FnMut(u32, &Destination, &mut T) -> bool;
 
@@ -380,7 +381,7 @@ impl Destination {
 /// A collection of CUPS destinations with automatic cleanup
 pub struct Destinations {
     dests: *mut bindings::cups_dest_s,
-    num_dests: c_int,
+    num_dests: usize,
     _marker: PhantomData<bindings::cups_dest_s>,
 }
 
@@ -485,7 +486,7 @@ impl Destinations {
     }
 
     /// Get number of destinations
-    pub fn count(&self) -> c_int {
+    pub fn count(&self) -> usize {
         self.num_dests
     }
 
@@ -940,9 +941,9 @@ pub fn get_default_destination() -> Result<Destination> {
 /// Copy a destination from one destination array to another
 pub fn copy_dest(
     dest: *const bindings::cups_dest_s,
-    num_dests: i32,
+    num_dests: usize,
     dests: *mut *mut bindings::cups_dest_s,
-) -> i32 {
+) -> usize {
     unsafe { bindings::cupsCopyDest(dest as *mut bindings::cups_dest_s, num_dests, dests) }
 }
 
@@ -950,9 +951,9 @@ pub fn copy_dest(
 pub fn remove_dest(
     name: &str,
     instance: Option<&str>,
-    num_dests: i32,
+    num_dests: usize,
     dests: *mut *mut bindings::cups_dest_s,
-) -> Result<i32> {
+) -> Result<usize> {
     let name_c = CString::new(name)?;
     let instance_c = match instance {
         Some(i) => Some(CString::new(i)?),

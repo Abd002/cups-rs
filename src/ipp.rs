@@ -355,7 +355,7 @@ impl IppRequest {
                 group.into(),
                 value_tag.into(),
                 name_c.as_ptr(),
-                values.len() as i32,
+                values.len(),
                 ptr::null(),
                 values_ptrs.as_ptr(),
             )
@@ -532,7 +532,7 @@ impl IppAttribute {
     /// Get a string value
     pub fn get_string(&self, index: usize) -> Option<String> {
         unsafe {
-            let value_ptr = bindings::ippGetString(self.attr, index as i32, ptr::null_mut());
+            let value_ptr = bindings::ippGetString(self.attr, index, ptr::null_mut());
             if value_ptr.is_null() {
                 None
             } else {
@@ -543,12 +543,12 @@ impl IppAttribute {
 
     /// Get an integer value
     pub fn get_integer(&self, index: usize) -> i32 {
-        unsafe { bindings::ippGetInteger(self.attr, index as i32) }
+        unsafe { bindings::ippGetInteger(self.attr, index) }
     }
 
     /// Get a boolean value
     pub fn get_boolean(&self, index: usize) -> bool {
-        unsafe { bindings::ippGetBoolean(self.attr, index as i32) }
+        unsafe { bindings::ippGetBoolean(self.attr, index) }
     }
 }
 
