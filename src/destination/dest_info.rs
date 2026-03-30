@@ -84,15 +84,7 @@ impl DestinationInfo {
         flags: u32,
     ) -> Result<MediaSize> {
         let media_c = CString::new(media)?;
-        let mut size = bindings::cups_size_s {
-            media: [0; 128],
-            width: 0,
-            length: 0,
-            bottom: 0,
-            left: 0,
-            right: 0,
-            top: 0,
-        };
+        let mut media_info: bindings::cups_media_s = unsafe { std::mem::zeroed() };
 
         let result = unsafe {
             bindings::cupsGetDestMediaByName(
@@ -101,7 +93,7 @@ impl DestinationInfo {
                 self.dinfo,
                 media_c.as_ptr(),
                 flags,
-                &mut size,
+                &mut media_info,
             )
         };
 
@@ -111,7 +103,7 @@ impl DestinationInfo {
                 media
             )))
         } else {
-            unsafe { MediaSize::from_cups_size(&size) }
+            unsafe { MediaSize::from_cups_media(&media_info) }
         }
     }
 
@@ -124,19 +116,17 @@ impl DestinationInfo {
         length: i32,
         flags: u32,
     ) -> Result<MediaSize> {
-        let mut size = bindings::cups_size_s {
-            media: [0; 128],
-            width: 0,
-            length: 0,
-            bottom: 0,
-            left: 0,
-            right: 0,
-            top: 0,
-        };
+        let mut media_info: bindings::cups_media_s = unsafe { std::mem::zeroed() };
 
         let result = unsafe {
             bindings::cupsGetDestMediaBySize(
-                http, dest, self.dinfo, width, length, flags, &mut size,
+                http,
+                dest,
+                self.dinfo,
+                width,
+                length,
+                flags,
+                &mut media_info,
             )
         };
 
@@ -146,7 +136,7 @@ impl DestinationInfo {
                 width, length
             )))
         } else {
-            unsafe { MediaSize::from_cups_size(&size) }
+            unsafe { MediaSize::from_cups_media(&media_info) }
         }
     }
 
@@ -158,18 +148,10 @@ impl DestinationInfo {
         index: usize,
         flags: u32,
     ) -> Result<MediaSize> {
-        let mut size = bindings::cups_size_s {
-            media: [0; 128],
-            width: 0,
-            length: 0,
-            bottom: 0,
-            left: 0,
-            right: 0,
-            top: 0,
-        };
+        let mut media_info: bindings::cups_media_s = unsafe { std::mem::zeroed() };
 
         let result = unsafe {
-            bindings::cupsGetDestMediaByIndex(http, dest, self.dinfo, index, flags, &mut size)
+            bindings::cupsGetDestMediaByIndex(http, dest, self.dinfo, index, flags, &mut media_info)
         };
 
         if result {
@@ -178,7 +160,7 @@ impl DestinationInfo {
                 index
             )))
         } else {
-            unsafe { MediaSize::from_cups_size(&size) }
+            unsafe { MediaSize::from_cups_media(&media_info) }
         }
     }
 
@@ -189,23 +171,16 @@ impl DestinationInfo {
         dest: *mut bindings::cups_dest_s,
         flags: u32,
     ) -> Result<MediaSize> {
-        let mut size = bindings::cups_size_s {
-            media: [0; 128],
-            width: 0,
-            length: 0,
-            bottom: 0,
-            left: 0,
-            right: 0,
-            top: 0,
-        };
+        let mut media_info: bindings::cups_media_s = unsafe { std::mem::zeroed() };
 
-        let result =
-            unsafe { bindings::cupsGetDestMediaDefault(http, dest, self.dinfo, flags, &mut size) };
+        let result = unsafe {
+            bindings::cupsGetDestMediaDefault(http, dest, self.dinfo, flags, &mut media_info)
+        };
 
         if result {
             Err(Error::MediaSizeError("Default media not found".to_string()))
         } else {
-            unsafe { MediaSize::from_cups_size(&size) }
+            unsafe { MediaSize::from_cups_media(&media_info) }
         }
     }
 
@@ -247,26 +222,25 @@ impl DestinationInfo {
         flags: u32,
         size: &MediaSize,
     ) -> Result<String> {
-        let mut cups_size = bindings::cups_size_s {
-            media: [0; 128],
-            width: size.width,
-            length: size.length,
-            bottom: size.bottom,
-            left: size.left,
-            right: size.right,
-            top: size.top,
-        };
+        let mut cups_media: bindings::cups_media_s = unsafe { std::mem::zeroed() };
+
+        cups_media.width = size.width;
+        cups_media.length = size.length;
+        cups_media.bottom = size.bottom;
+        cups_media.left = size.left;
+        cups_media.right = size.right;
+        cups_media.top = size.top;
 
         // Copy the media name into the cups_size_t structure
         let name_bytes = size.name.as_bytes();
         let max_len = 127.min(name_bytes.len());
         for i in 0..max_len {
-            cups_size.media[i] = name_bytes[i] as ::std::os::raw::c_char;
+            cups_media.media[i] = name_bytes[i] as ::std::os::raw::c_char;
         }
-        cups_size.media[max_len] = 0;
+        cups_media.media[max_len] = 0;
 
         let result = unsafe {
-            bindings::cupsLocalizeDestMedia(http, dest, self.dinfo, flags, &mut cups_size)
+            bindings::cupsLocalizeDestMedia(http, dest, self.dinfo, flags, &mut cups_media)
         };
 
         if result.is_null() {
