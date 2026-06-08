@@ -68,10 +68,6 @@ fn get_jobs_with_filter(dest_name: Option<&str>, which_jobs: i32) -> Result<Vec<
         bindings::cupsGetJobs(ptr::null_mut(), &mut jobs_ptr, dest_ptr, false, which_jobs)
     };
 
-    if num_jobs < 0 {
-        return Ok(Vec::new());
-    }
-
     if jobs_ptr.is_null() {
         return Ok(Vec::new());
     }

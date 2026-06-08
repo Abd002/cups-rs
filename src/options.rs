@@ -1,7 +1,6 @@
 use crate::bindings;
 use crate::error::{Error, Result};
 use std::ffi::{CStr, CString};
-use std::os::raw::c_int;
 use std::ptr;
 
 /// Parse command-line style options into key-value pairs
