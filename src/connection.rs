@@ -1,6 +1,7 @@
 use crate::bindings;
 use crate::destination::{DestCallback, Destination};
 use crate::error::{Error, Result};
+use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::{c_int, c_void};
 use std::ptr;
@@ -60,6 +61,66 @@ impl HttpConnection {
             resource,
             _phantom: PhantomData,
         })
+    }
+
+    /// Resolve and connect directly to an IPP or IPPS URI.
+    pub fn connect_uri(uri: &str, timeout_ms: Option<i32>) -> Result<(Self, String)> {
+        const BUFFER_SIZE: usize = 1024;
+
+        let uri = CString::new(uri)?;
+        let mut resolved_uri = vec![0_u8; BUFFER_SIZE];
+        let resolved = unsafe {
+            bindings::httpResolveURI(
+                uri.as_ptr(),
+                resolved_uri.as_mut_ptr().cast(),
+                resolved_uri.len(),
+                bindings::http_resolve_e_HTTP_RESOLVE_DEFAULT,
+                None,
+                ptr::null_mut(),
+            )
+        };
+        if resolved.is_null() {
+            return Err(Error::ConnectionFailed(
+                "Failed to resolve printer URI".to_string(),
+            ));
+        }
+
+        let resolved_uri = unsafe { CStr::from_ptr(resolved) }
+            .to_string_lossy()
+            .into_owned();
+        let mut host = vec![0_u8; BUFFER_SIZE];
+        let mut resource = vec![0_u8; BUFFER_SIZE];
+        let mut port = 0;
+        let http = unsafe {
+            bindings::httpConnectURI(
+                resolved,
+                host.as_mut_ptr().cast(),
+                host.len(),
+                &mut port,
+                resource.as_mut_ptr().cast(),
+                resource.len(),
+                true,
+                timeout_ms.unwrap_or(-1),
+                ptr::null_mut(),
+                false,
+            )
+        };
+        if http.is_null() {
+            return Err(Error::ConnectionFailed(
+                "Failed to connect to printer URI".to_string(),
+            ));
+        }
+
+        let resource = unsafe { CStr::from_ptr(resource.as_ptr().cast()) }
+            .to_string_lossy()
+            .into_owned();
+        let connection = Self {
+            http,
+            resource,
+            _phantom: PhantomData,
+        };
+
+        Ok((connection, resolved_uri))
     }
 
     /// Get the raw pointer to the http_t structure

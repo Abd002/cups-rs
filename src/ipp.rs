@@ -383,7 +383,8 @@ impl IppRequest {
     pub fn send(&self, connection: &HttpConnection, resource: &str) -> Result<IppResponse> {
         let resource_c = CString::new(resource)?;
 
-        // Note: cupsDoRequest frees the request, so we need to create a copy
+        // cupsDoRequest frees the request, so send a copy.
+        // create an empty IPP message for the outgoing copy
         let request_copy = unsafe { bindings::ippNew() };
         if request_copy.is_null() {
             return Err(Error::UnsupportedFeature(
@@ -392,7 +393,12 @@ impl IppRequest {
         }
 
         unsafe {
-            bindings::ippCopyAttributes(request_copy, self.ipp, false, None, ptr::null_mut());
+            // Copy request header fields
+            bindings::ippSetOperation(request_copy, bindings::ippGetOperation(self.ipp));
+            bindings::ippSetRequestId(request_copy, bindings::ippGetRequestId(self.ipp));
+
+            // Copy all attributes
+            bindings::ippCopyAttributes(request_copy, self.ipp, 0, None, ptr::null_mut());
         }
 
         let response = unsafe {
