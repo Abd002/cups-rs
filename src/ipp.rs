@@ -398,7 +398,7 @@ impl IppRequest {
             bindings::ippSetRequestId(request_copy, bindings::ippGetRequestId(self.ipp));
 
             // Copy all attributes
-            bindings::ippCopyAttributes(request_copy, self.ipp, 0, None, ptr::null_mut());
+            bindings::ippCopyAttributes(request_copy, self.ipp, false, None, ptr::null_mut());
         }
 
         let response = unsafe {
