@@ -116,6 +116,7 @@ pub enum IppOperation {
     GetJobAttributes,
     GetJobs,
     GetPrinterAttributes,
+    GetSystemAttributes,
     HoldJob,
     ReleaseJob,
     PausePrinter,
@@ -137,6 +138,7 @@ impl From<IppOperation> for bindings::ipp_op_t {
             IppOperation::GetJobAttributes => bindings::ipp_op_e_IPP_OP_GET_JOB_ATTRIBUTES,
             IppOperation::GetJobs => bindings::ipp_op_e_IPP_OP_GET_JOBS,
             IppOperation::GetPrinterAttributes => bindings::ipp_op_e_IPP_OP_GET_PRINTER_ATTRIBUTES,
+            IppOperation::GetSystemAttributes => bindings::ipp_op_e_IPP_OP_GET_SYSTEM_ATTRIBUTES,
             IppOperation::HoldJob => bindings::ipp_op_e_IPP_OP_HOLD_JOB,
             IppOperation::ReleaseJob => bindings::ipp_op_e_IPP_OP_RELEASE_JOB,
             IppOperation::PausePrinter => bindings::ipp_op_e_IPP_OP_PAUSE_PRINTER,
@@ -606,6 +608,12 @@ mod tests {
     #[test]
     fn test_ipp_request_creation() {
         let request = IppRequest::new(IppOperation::GetPrinterAttributes);
+        assert!(request.is_ok());
+    }
+
+    #[test]
+    fn test_system_attributes_request_creation() {
+        let request = IppRequest::new(IppOperation::GetSystemAttributes);
         assert!(request.is_ok());
     }
 

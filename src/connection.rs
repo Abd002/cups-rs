@@ -1,6 +1,6 @@
-use crate::bindings;
 use crate::destination::{DestCallback, Destination};
 use crate::error::{Error, Result};
+use crate::{bindings, config::EncryptionMode};
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::os::raw::{c_int, c_void};
@@ -70,6 +70,23 @@ impl HttpConnection {
         resource: &str,
         timeout_ms: Option<i32>,
     ) -> Result<Self> {
+        Self::connect_host_with_encryption(
+            host,
+            port,
+            resource,
+            EncryptionMode::IfRequested,
+            timeout_ms,
+        )
+    }
+
+    /// Connect directly to a host with an explicit encryption policy.
+    pub fn connect_host_with_encryption(
+        host: &str,
+        port: u16,
+        resource: &str,
+        encryption: EncryptionMode,
+        timeout_ms: Option<i32>,
+    ) -> Result<Self> {
         let host = CString::new(host)?;
         let http = unsafe {
             bindings::httpConnect(
@@ -77,7 +94,7 @@ impl HttpConnection {
                 port.into(),
                 ptr::null_mut(),
                 0,
-                bindings::http_encryption_e_HTTP_ENCRYPTION_IF_REQUESTED,
+                encryption.into(),
                 true,
                 timeout_ms.unwrap_or(-1),
                 ptr::null_mut(),
