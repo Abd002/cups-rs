@@ -124,6 +124,7 @@ pub enum IppOperation {
     CupsAddModifyPrinter,
     CupsCreateLocalPrinter,
     CupsDeletePrinter,
+    CupsMoveJob,
     CupsSetDefault,
 }
 
@@ -148,6 +149,7 @@ impl From<IppOperation> for bindings::ipp_op_t {
                 bindings::ipp_op_e_IPP_OP_CUPS_CREATE_LOCAL_PRINTER
             }
             IppOperation::CupsDeletePrinter => bindings::ipp_op_e_IPP_OP_CUPS_DELETE_PRINTER,
+            IppOperation::CupsMoveJob => bindings::ipp_op_e_IPP_OP_CUPS_MOVE_JOB,
             IppOperation::CupsSetDefault => bindings::ipp_op_e_IPP_OP_CUPS_SET_DEFAULT,
         }
     }
@@ -172,6 +174,7 @@ pub enum IppStatus {
     ErrorRequestEntity,
     ErrorRequestValue,
     ErrorDocumentFormatNotSupported,
+    ErrorOperationNotSupported,
     ErrorConflicting,
     ErrorPrinterIsDeactivated,
     ErrorTooManyJobs,
@@ -200,6 +203,9 @@ impl IppStatus {
             bindings::ipp_status_e_IPP_STATUS_ERROR_REQUEST_VALUE => IppStatus::ErrorRequestValue,
             bindings::ipp_status_e_IPP_STATUS_ERROR_DOCUMENT_FORMAT_NOT_SUPPORTED => {
                 IppStatus::ErrorDocumentFormatNotSupported
+            }
+            bindings::ipp_status_e_IPP_STATUS_ERROR_OPERATION_NOT_SUPPORTED => {
+                IppStatus::ErrorOperationNotSupported
             }
             bindings::ipp_status_e_IPP_STATUS_ERROR_CONFLICTING => IppStatus::ErrorConflicting,
             bindings::ipp_status_e_IPP_STATUS_ERROR_PRINTER_IS_DEACTIVATED => {
@@ -614,6 +620,12 @@ mod tests {
     #[test]
     fn test_system_attributes_request_creation() {
         let request = IppRequest::new(IppOperation::GetSystemAttributes);
+        assert!(request.is_ok());
+    }
+
+    #[test]
+    fn test_cups_move_job_request_creation() {
+        let request = IppRequest::new(IppOperation::CupsMoveJob);
         assert!(request.is_ok());
     }
 
