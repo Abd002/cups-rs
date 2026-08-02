@@ -19,8 +19,8 @@ pub enum ConnectionFlags {
 impl From<ConnectionFlags> for u32 {
     fn from(flags: ConnectionFlags) -> u32 {
         match flags {
-            ConnectionFlags::Scheduler => 0,
-            ConnectionFlags::Device => 1,
+            ConnectionFlags::Scheduler => crate::DEST_FLAGS_NONE,
+            ConnectionFlags::Device => crate::DEST_FLAGS_DEVICE,
         }
     }
 }
@@ -362,8 +362,11 @@ mod tests {
 
     #[test]
     fn test_connection_flags() {
-        assert_eq!(u32::from(ConnectionFlags::Scheduler), 0);
-        assert_eq!(u32::from(ConnectionFlags::Device), 1);
+        assert_eq!(
+            u32::from(ConnectionFlags::Scheduler),
+            crate::DEST_FLAGS_NONE
+        );
+        assert_eq!(u32::from(ConnectionFlags::Device), crate::DEST_FLAGS_DEVICE);
     }
 
     #[test]
