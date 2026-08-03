@@ -1,11 +1,10 @@
-use cups_rs::{Dnssd, DnssdResolveEvent};
+use cups_rs::Dnssd;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 fn main() -> cups_rs::Result<()> {
     let (error_sender, error_receiver) = mpsc::channel();
     let (browse_sender, browse_receiver) = mpsc::channel();
-    let (resolve_sender, resolve_receiver) = mpsc::channel::<DnssdResolveEvent>();
     let dnssd = Dnssd::new(error_sender)?;
     let _ipp = dnssd.browse("_ipp-system._tcp", None, browse_sender.clone())?;
     let _ipps = dnssd.browse("_ipps-system._tcp", None, browse_sender)?;
@@ -15,16 +14,23 @@ fn main() -> cups_rs::Result<()> {
     while Instant::now() < deadline {
         while let Ok(service) = browse_receiver.try_recv() {
             if service.added {
-                resolvers.push(dnssd.resolve(&service, resolve_sender.clone())?);
+                resolvers.push(dnssd.resolve_service(&service)?);
             }
         }
-        while let Ok(service) = resolve_receiver.try_recv() {
-            println!(
-                "{} {}:{} ({})",
-                service.name, service.hostname, service.port, service.service_type
-            );
-            for (name, value) in service.txt {
-                println!("  {name}={value}");
+        for resolver in &mut resolvers {
+            if let Some(resolved) = resolver.try_recv()? {
+                let service = resolved.service;
+                println!(
+                    "{} {}:{} ({}) addresses={:?}",
+                    service.name,
+                    service.hostname,
+                    service.port,
+                    service.service_type,
+                    resolved.addresses
+                );
+                for (name, value) in service.txt {
+                    println!("  {name}={value}");
+                }
             }
         }
         while let Ok(error) = error_receiver.try_recv() {

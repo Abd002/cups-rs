@@ -1,8 +1,10 @@
 use crate::{Error, Result, bindings};
 use std::ffi::{CStr, CString, c_void};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ptr;
+use std::slice;
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DnssdBrowseEvent {
@@ -25,6 +27,22 @@ pub struct DnssdResolveEvent {
     pub txt: Vec<(String, String)>,
 }
 
+/// A DNS-SD service resolution together with its current addresses.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DnssdResolvedService {
+    pub service: DnssdResolveEvent,
+    pub addresses: Vec<IpAddr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DnssdAddressEvent {
+    added: bool,
+    interface_index: u32,
+    hostname: String,
+    address: IpAddr,
+}
+
+#[derive(Clone)]
 pub struct Dnssd {
     inner: Arc<DnssdInner>,
 }
@@ -42,6 +60,7 @@ struct ResolveState {
     service_type: String,
     domain: String,
 }
+struct QueryState(Sender<DnssdAddressEvent>);
 
 impl Dnssd {
     pub fn new(error_sender: Sender<String>) -> Result<Self> {
@@ -130,6 +149,69 @@ impl Dnssd {
             _context: Arc::clone(&self.inner),
         })
     }
+
+    /// Resolves SRV/TXT data and A/AAAA addresses for a service.
+    ///
+    /// Call [`DnssdServiceResolver::try_recv`] from the same event loop that
+    /// consumes browse events. A result is emitted once at least one address
+    /// has been resolved and again whenever the address set changes.
+    pub fn resolve_service(&self, service: &DnssdBrowseEvent) -> Result<DnssdServiceResolver> {
+        let (resolve_sender, resolve_receiver) = mpsc::channel();
+        let resolver = self.resolve(service, resolve_sender)?;
+        let (address_sender, address_receiver) = mpsc::channel();
+        Ok(DnssdServiceResolver {
+            dnssd: self.clone(),
+            resolver,
+            resolve_receiver,
+            address_sender,
+            address_receiver,
+            address_queries: None,
+            resolved: None,
+            addresses: Vec::new(),
+        })
+    }
+
+    fn query_addresses(
+        &self,
+        hostname: &str,
+        interface_index: u32,
+        sender: Sender<DnssdAddressEvent>,
+    ) -> Result<DnssdAddressQueries> {
+        let ipv4 = self.query_address(hostname, interface_index, 1, sender.clone())?;
+        let ipv6 = self.query_address(hostname, interface_index, 28, sender)?;
+        Ok(DnssdAddressQueries { ipv4, ipv6 })
+    }
+
+    fn query_address(
+        &self,
+        hostname: &str,
+        interface_index: u32,
+        record_type: u16,
+        sender: Sender<DnssdAddressEvent>,
+    ) -> Result<DnssdQuery> {
+        let hostname = CString::new(hostname)?;
+        let mut state = Box::new(QueryState(sender));
+        let raw = unsafe {
+            bindings::cupsDNSSDQueryNew(
+                self.inner.raw,
+                interface_index,
+                hostname.as_ptr(),
+                record_type,
+                Some(query_callback),
+                (&mut *state as *mut QueryState).cast(),
+            )
+        };
+        if raw.is_null() {
+            return Err(Error::NetworkError(format!(
+                "failed to query DNS-SD addresses for '{hostname:?}'"
+            )));
+        }
+        Ok(DnssdQuery {
+            raw,
+            state,
+            _context: Arc::clone(&self.inner),
+        })
+    }
 }
 
 impl Drop for DnssdInner {
@@ -158,10 +240,106 @@ pub struct DnssdResolver {
     _context: Arc<DnssdInner>,
 }
 
+/// Keeps a service resolver and its A/AAAA queries alive.
+pub struct DnssdServiceResolver {
+    dnssd: Dnssd,
+    resolver: DnssdResolver,
+    resolve_receiver: Receiver<DnssdResolveEvent>,
+    address_sender: Sender<DnssdAddressEvent>,
+    address_receiver: Receiver<DnssdAddressEvent>,
+    address_queries: Option<DnssdAddressQueries>,
+    resolved: Option<DnssdResolveEvent>,
+    addresses: Vec<IpAddr>,
+}
+
+struct DnssdAddressQueries {
+    ipv4: DnssdQuery,
+    ipv6: DnssdQuery,
+}
+
+struct DnssdQuery {
+    raw: *mut bindings::_cups_dnssd_query_s,
+    state: Box<QueryState>,
+    _context: Arc<DnssdInner>,
+}
+
+impl DnssdServiceResolver {
+    /// Returns the latest combined service update without blocking.
+    pub fn try_recv(&mut self) -> Result<Option<DnssdResolvedService>> {
+        while let Ok(service) = self.resolve_receiver.try_recv() {
+            self.addresses.clear();
+            self.address_queries = Some(self.dnssd.query_addresses(
+                &service.hostname,
+                service.interface_index,
+                self.address_sender.clone(),
+            )?);
+            self.resolved = Some(service);
+        }
+
+        let mut changed = false;
+        while let Ok(event) = self.address_receiver.try_recv() {
+            let Some(service) = &self.resolved else {
+                continue;
+            };
+            if event.interface_index != service.interface_index
+                || normalize_name(&event.hostname) != normalize_name(&service.hostname)
+            {
+                continue;
+            }
+
+            if event.added {
+                if !self.addresses.contains(&event.address) {
+                    self.addresses.push(event.address);
+                    changed = true;
+                }
+            } else if let Some(index) = self
+                .addresses
+                .iter()
+                .position(|address| *address == event.address)
+            {
+                self.addresses.remove(index);
+                changed = true;
+            }
+        }
+
+        if !changed {
+            return Ok(None);
+        }
+        self.addresses.sort();
+        Ok(self.resolved.clone().map(|service| DnssdResolvedService {
+            service,
+            addresses: self.addresses.clone(),
+        }))
+    }
+}
+
+fn normalize_name(value: &str) -> String {
+    value.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
 impl Drop for DnssdResolver {
     fn drop(&mut self) {
         unsafe { bindings::cupsDNSSDResolveDelete(self.raw) };
         let _ = &self.state;
+    }
+}
+
+impl Drop for DnssdQuery {
+    fn drop(&mut self) {
+        unsafe { bindings::cupsDNSSDQueryDelete(self.raw) };
+        let _ = &self.state;
+    }
+}
+
+impl Drop for DnssdAddressQueries {
+    fn drop(&mut self) {
+        let _ = (&self.ipv4, &self.ipv6);
+    }
+}
+
+impl Drop for DnssdServiceResolver {
+    fn drop(&mut self) {
+        let _ = &self.resolver;
     }
 }
 
@@ -252,5 +430,46 @@ unsafe extern "C" fn resolve_callback(
             .to_string(),
         port,
         txt: options,
+    });
+}
+
+unsafe extern "C" fn query_callback(
+    _query: *mut bindings::_cups_dnssd_query_s,
+    cb_data: *mut c_void,
+    flags: bindings::cups_dnssd_flags_t,
+    interface_index: u32,
+    full_name: *const i8,
+    record_type: u16,
+    query_data: *const c_void,
+    query_len: u16,
+) {
+    if cb_data.is_null()
+        || full_name.is_null()
+        || query_data.is_null()
+        || flags & bindings::cups_dnssd_flags_e_CUPS_DNSSD_FLAGS_ERROR != 0
+    {
+        return;
+    }
+
+    let bytes = unsafe { slice::from_raw_parts(query_data.cast::<u8>(), usize::from(query_len)) };
+    let address = match (record_type, bytes) {
+        (1, [a, b, c, d]) => IpAddr::V4(Ipv4Addr::new(*a, *b, *c, *d)),
+        (28, bytes) if bytes.len() == 16 => {
+            let Ok(octets) = <[u8; 16]>::try_from(bytes) else {
+                return;
+            };
+            IpAddr::V6(Ipv6Addr::from(octets))
+        }
+        _ => return,
+    };
+    let state = unsafe { &*(cb_data.cast::<QueryState>()) };
+    let _ = state.0.send(DnssdAddressEvent {
+        added: flags & bindings::cups_dnssd_flags_e_CUPS_DNSSD_FLAGS_ADD != 0,
+        interface_index,
+        hostname: unsafe { CStr::from_ptr(full_name) }
+            .to_string_lossy()
+            .trim_end_matches('.')
+            .to_string(),
+        address,
     });
 }

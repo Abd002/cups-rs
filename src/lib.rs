@@ -184,7 +184,10 @@ pub use destination::{
     enum_destinations, find_destinations, get_all_destinations, get_default_destination,
     get_destination, remove_dest,
 };
-pub use dnssd::{Dnssd, DnssdBrowseEvent, DnssdBrowser, DnssdResolveEvent, DnssdResolver};
+pub use dnssd::{
+    Dnssd, DnssdBrowseEvent, DnssdBrowser, DnssdResolveEvent, DnssdResolvedService, DnssdResolver,
+    DnssdServiceResolver,
+};
 pub use error::{Error, ErrorCategory, Result};
 pub use ipp::{
     IppAttribute, IppOperation, IppRequest, IppResponse, IppStatus, IppTag, IppValueTag,
@@ -195,6 +198,6 @@ pub use job::{
     create_job_with_options, get_active_jobs, get_completed_jobs, get_job_info, get_jobs,
 };
 pub use options::{
-    add_integer_option, add_option, encode_option,  encode_options_with_group,
-    get_integer_option, get_option, parse_options, remove_option,
+    add_integer_option, add_option, encode_option, encode_options_with_group, get_integer_option,
+    get_option, parse_options, remove_option,
 };
