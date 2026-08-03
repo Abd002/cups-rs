@@ -156,11 +156,16 @@ impl Dnssd {
     /// consumes browse events. A result is emitted once at least one address
     /// has been resolved and again whenever the address set changes.
     pub fn resolve_service(&self, service: &DnssdBrowseEvent) -> Result<DnssdServiceResolver> {
+        // libcups' Avahi backend uses a context-wide `in_callback` flag when
+        // deciding whether to take its internal lock. Keep deferred resolve
+        // operations off the actively browsing context so another callback
+        // cannot make that decision for the wrong thread.
+        let dnssd = Dnssd::new(self.inner.error_state.0.clone())?;
         let (resolve_sender, resolve_receiver) = mpsc::channel();
-        let resolver = self.resolve(service, resolve_sender)?;
+        let resolver = dnssd.resolve(service, resolve_sender)?;
         let (address_sender, address_receiver) = mpsc::channel();
         Ok(DnssdServiceResolver {
-            dnssd: self.clone(),
+            dnssd,
             resolver,
             resolve_receiver,
             address_sender,
@@ -177,8 +182,13 @@ impl Dnssd {
         interface_index: u32,
         sender: Sender<DnssdAddressEvent>,
     ) -> Result<DnssdAddressQueries> {
-        let ipv4 = self.query_address(hostname, interface_index, 1, sender.clone())?;
-        let ipv6 = self.query_address(hostname, interface_index, 28, sender)?;
+        // Each deferred query also gets an idle context. Creating a second
+        // query on a context whose first query is already dispatching has the
+        // same cross-thread race in libcups' Avahi backend.
+        let ipv4_context = Dnssd::new(self.inner.error_state.0.clone())?;
+        let ipv4 = ipv4_context.query_address(hostname, interface_index, 1, sender.clone())?;
+        let ipv6_context = Dnssd::new(self.inner.error_state.0.clone())?;
+        let ipv6 = ipv6_context.query_address(hostname, interface_index, 28, sender)?;
         Ok(DnssdAddressQueries { ipv4, ipv6 })
     }
 
