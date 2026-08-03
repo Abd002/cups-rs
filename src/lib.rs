@@ -141,6 +141,9 @@ pub mod constants;
 /// - Resolve option conflicts
 pub mod destination;
 
+/// DNS Service Discovery browsing and service resolution.
+pub mod dnssd;
+
 mod error;
 mod error_helpers;
 
@@ -181,6 +184,7 @@ pub use destination::{
     enum_destinations, find_destinations, get_all_destinations, get_default_destination,
     get_destination, remove_dest,
 };
+pub use dnssd::{Dnssd, DnssdBrowseEvent, DnssdBrowser, DnssdResolveEvent, DnssdResolver};
 pub use error::{Error, ErrorCategory, Result};
 pub use ipp::{
     IppAttribute, IppOperation, IppRequest, IppResponse, IppStatus, IppTag, IppValueTag,
