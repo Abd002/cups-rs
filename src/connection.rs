@@ -1,10 +1,11 @@
 use crate::destination::{DestCallback, Destination};
 use crate::error::{Error, Result};
 use crate::{bindings, config::EncryptionMode};
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::{c_int, c_void};
 use std::ptr;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Connection flags for controlling how to connect to a destination
@@ -121,6 +122,51 @@ impl HttpConnection {
     /// Get the resource path for this connection
     pub fn resource_path(&self) -> &str {
         &self.resource
+    }
+
+    /// Returns the hostname selected for this connection.
+    pub fn hostname(&self) -> Option<String> {
+        let mut buffer = [0i8; 1024];
+        let hostname =
+            unsafe { bindings::httpGetHostname(self.http, buffer.as_mut_ptr(), buffer.len()) };
+        if hostname.is_null() {
+            return None;
+        }
+
+        Some(
+            unsafe { CStr::from_ptr(hostname) }
+                .to_string_lossy()
+                .trim_end_matches('.')
+                .to_string(),
+        )
+        .filter(|hostname| !hostname.is_empty())
+    }
+
+    /// Returns the peer address selected for this connection.
+    pub fn address(&self) -> Option<std::net::IpAddr> {
+        let address = unsafe { bindings::httpGetAddress(self.http) };
+        if address.is_null() {
+            return None;
+        }
+
+        let mut buffer = [0i8; 128];
+        let value =
+            unsafe { bindings::httpAddrGetString(address, buffer.as_mut_ptr(), buffer.len()) };
+        if value.is_null() {
+            return None;
+        }
+
+        std::net::IpAddr::from_str(unsafe { CStr::from_ptr(value) }.to_str().ok()?).ok()
+    }
+
+    /// Returns the peer port selected for this connection.
+    pub fn port(&self) -> Option<u16> {
+        let address = unsafe { bindings::httpGetAddress(self.http) };
+        if address.is_null() {
+            return None;
+        }
+
+        u16::try_from(unsafe { bindings::httpAddrGetPort(address) }).ok()
     }
 
     /// Close the HTTP connection
