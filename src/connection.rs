@@ -119,6 +119,21 @@ impl HttpConnection {
         self.http
     }
 
+    /// Sets how long an individual read or write on this connection may stall.
+    ///
+    /// The timeout passed to [`HttpConnection::connect_host`] only bounds
+    /// connection setup. This bounds the wait for a reply, which matters for
+    /// operations that do real work before responding — a Printer Application
+    /// answering `PAPPL-Find-Devices` rescans USB, SNMP and DNS-SD first, and can
+    /// take tens of seconds.
+    ///
+    /// A non-positive value restores the default of waiting indefinitely.
+    pub fn set_timeout(&mut self, seconds: f64) {
+        unsafe {
+            bindings::httpSetTimeout(self.http, seconds, None, ptr::null_mut());
+        }
+    }
+
     /// Get the resource path for this connection
     pub fn resource_path(&self) -> &str {
         &self.resource

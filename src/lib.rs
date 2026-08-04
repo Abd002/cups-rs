@@ -190,7 +190,8 @@ pub use dnssd::{
 };
 pub use error::{Error, ErrorCategory, Result};
 pub use ipp::{
-    IppAttribute, IppOperation, IppRequest, IppResponse, IppStatus, IppTag, IppValueTag,
+    IppAttribute, IppCollection, IppOperation, IppRequest, IppResponse, IppStatus, IppTag,
+    IppValueTag,
 };
 pub use job::{
     ColorMode, DuplexMode, FORMAT_JPEG, FORMAT_PDF, FORMAT_POSTSCRIPT, FORMAT_TEXT, JobInfo,
