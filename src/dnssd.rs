@@ -3,8 +3,8 @@ use std::ffi::{CStr, CString, c_void};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ptr;
 use std::slice;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DnssdBrowseEvent {
@@ -49,8 +49,27 @@ pub struct Dnssd {
 
 struct DnssdInner {
     raw: *mut bindings::_cups_dnssd_s,
+    /// Registered with libcups as the error callback's data, so it lives exactly as
+    /// long as the context. Taken when the context is recycled.
+    error_state: Option<Box<ErrorState>>,
+}
+
+/// A context nobody is using, kept for the next caller that needs one.
+struct IdleContext {
+    raw: *mut bindings::_cups_dnssd_s,
     error_state: Box<ErrorState>,
 }
+
+// A context sits here only while no owner holds it, and leaves to exactly one
+// owner, so moving it between threads hands over sole access rather than sharing.
+unsafe impl Send for IdleContext {}
+
+/// Contexts that have been finished with.
+///
+/// A context is never destroyed while the process runs — see [`DnssdInner::drop`]
+/// — so one is reused rather than created again. Without this, a service that came
+/// and went would cost a context every time.
+static IDLE_CONTEXTS: Mutex<Vec<IdleContext>> = Mutex::new(Vec::new());
 
 struct ErrorState(Sender<String>);
 struct BrowseState(Sender<DnssdBrowseEvent>);
@@ -77,8 +96,44 @@ impl Dnssd {
             ));
         }
         Ok(Self {
-            inner: Arc::new(DnssdInner { raw, error_state }),
+            inner: Arc::new(DnssdInner {
+                raw,
+                error_state: Some(error_state),
+            }),
         })
+    }
+
+    /// Returns a context of its own for work this process starts itself.
+    ///
+    /// libcups decides whether to take its internal lock from a context-wide "am I
+    /// in a callback" flag that a browse or query callback sets for every thread, so
+    /// starting a resolver on a context that is already dispatching callbacks can
+    /// land inside libcups with no lock held at all. That is a data race on the
+    /// Avahi client, and it segfaults rather than failing. Each piece of deferred
+    /// work therefore gets a context nothing else is using.
+    ///
+    /// A recycled context reports libcups errors to the channel of whichever
+    /// context first created it, which is the same channel in a process with one
+    /// [`Dnssd::new`] caller.
+    fn deferred(&self) -> Result<Dnssd> {
+        if let Some(idle) = idle_contexts().pop() {
+            return Ok(Self {
+                inner: Arc::new(DnssdInner {
+                    raw: idle.raw,
+                    error_state: Some(idle.error_state),
+                }),
+            });
+        }
+
+        Dnssd::new(self.error_sender())
+    }
+
+    fn error_sender(&self) -> Sender<String> {
+        self.inner
+            .error_state
+            .as_ref()
+            .map(|state| state.0.clone())
+            .expect("a context in use has its error state")
     }
 
     pub fn browse(
@@ -156,21 +211,23 @@ impl Dnssd {
     /// consumes browse events. A result is emitted once at least one address
     /// has been resolved and again whenever the address set changes.
     pub fn resolve_service(&self, service: &DnssdBrowseEvent) -> Result<DnssdServiceResolver> {
-        // libcups' Avahi backend uses a context-wide `in_callback` flag when
-        // deciding whether to take its internal lock. Keep deferred resolve
-        // operations off the actively browsing context so another callback
-        // cannot make that decision for the wrong thread.
-        let dnssd = Dnssd::new(self.inner.error_state.0.clone())?;
+        // Two contexts, because a resolver and the address queries that follow it
+        // dispatch callbacks independently: sharing one would let a query callback
+        // decide, for this thread, that no lock is needed.
+        let resolve_context = self.deferred()?;
+        let query_context = self.deferred()?;
         let (resolve_sender, resolve_receiver) = mpsc::channel();
-        let resolver = dnssd.resolve(service, resolve_sender)?;
+        let resolver = resolve_context.resolve(service, resolve_sender)?;
         let (address_sender, address_receiver) = mpsc::channel();
         Ok(DnssdServiceResolver {
-            dnssd,
+            _resolve_context: resolve_context,
+            query_context,
             resolver,
             resolve_receiver,
             address_sender,
             address_receiver,
             address_queries: None,
+            queried: None,
             resolved: None,
             addresses: Vec::new(),
         })
@@ -182,13 +239,9 @@ impl Dnssd {
         interface_index: u32,
         sender: Sender<DnssdAddressEvent>,
     ) -> Result<DnssdAddressQueries> {
-        // Each deferred query also gets an idle context. Creating a second
-        // query on a context whose first query is already dispatching has the
-        // same cross-thread race in libcups' Avahi backend.
-        let ipv4_context = Dnssd::new(self.inner.error_state.0.clone())?;
-        let ipv4 = ipv4_context.query_address(hostname, interface_index, 1, sender.clone())?;
-        let ipv6_context = Dnssd::new(self.inner.error_state.0.clone())?;
-        let ipv6 = ipv6_context.query_address(hostname, interface_index, 28, sender)?;
+        let ipv4 = self.query_address(hostname, interface_index, 1, sender.clone())?;
+        let ipv6 = self.query_address(hostname, interface_index, 28, sender)?;
+
         Ok(DnssdAddressQueries { ipv4, ipv6 })
     }
 
@@ -224,11 +277,34 @@ impl Dnssd {
     }
 }
 
+/// A DNS-SD context is deliberately never destroyed.
+///
+/// `cupsDNSSDDelete` calls `avahi_domain_browser_free(dnssd->dbrowser)`
+/// unconditionally, and `cupsDNSSDNew` stores the result of
+/// `avahi_domain_browser_new` without checking it — which is NULL whenever the
+/// Avahi client was not connected at that moment. libavahi asserts on NULL, so
+/// deleting such a context aborts the whole process. Nothing outside libcups can
+/// tell the two apart (libcups 3.0.1, `cups/dnssd.c`).
+///
+/// Aborting a settings daemon is far worse than holding an Avahi client open, so
+/// the context goes to [`IDLE_CONTEXTS`] to be used again instead. Reuse is what
+/// keeps that affordable: the number of contexts settles at the most that were ever
+/// needed at once, however many services come and go.
 impl Drop for DnssdInner {
     fn drop(&mut self) {
-        unsafe { bindings::cupsDNSSDDelete(self.raw) };
-        let _ = &self.error_state;
+        if let Some(error_state) = self.error_state.take() {
+            idle_contexts().push(IdleContext {
+                raw: self.raw,
+                error_state,
+            });
+        }
     }
+}
+
+fn idle_contexts() -> MutexGuard<'static, Vec<IdleContext>> {
+    IDLE_CONTEXTS
+        .lock()
+        .unwrap_or_else(|poisoned: std::sync::PoisonError<_>| poisoned.into_inner())
 }
 
 pub struct DnssdBrowser {
@@ -252,12 +328,16 @@ pub struct DnssdResolver {
 
 /// Keeps a service resolver and its A/AAAA queries alive.
 pub struct DnssdServiceResolver {
-    dnssd: Dnssd,
+    /// Held so the context the resolver was started on outlives it.
+    _resolve_context: Dnssd,
+    query_context: Dnssd,
     resolver: DnssdResolver,
     resolve_receiver: Receiver<DnssdResolveEvent>,
     address_sender: Sender<DnssdAddressEvent>,
     address_receiver: Receiver<DnssdAddressEvent>,
     address_queries: Option<DnssdAddressQueries>,
+    /// The host and interface the current queries are asking about.
+    queried: Option<(String, u32)>,
     resolved: Option<DnssdResolveEvent>,
     addresses: Vec<IpAddr>,
 }
@@ -276,17 +356,36 @@ struct DnssdQuery {
 impl DnssdServiceResolver {
     /// Returns the latest combined service update without blocking.
     pub fn try_recv(&mut self) -> Result<Option<DnssdResolvedService>> {
+        let mut changed = false;
+
         while let Ok(service) = self.resolve_receiver.try_recv() {
-            self.addresses.clear();
-            self.address_queries = Some(self.dnssd.query_addresses(
-                &service.hostname,
-                service.interface_index,
-                self.address_sender.clone(),
-            )?);
+            let target = (normalize_name(&service.hostname), service.interface_index);
+
+            // A service re-announces itself often, usually saying the same thing.
+            // Replacing the running queries every time creates and destroys DNS-SD
+            // contexts for no new information, which is both wasted work and the
+            // churn that makes libcups' teardown path dangerous. So they are
+            // replaced only when they would ask a different question, or when they
+            // have not answered yet — an announcement is the natural moment to ask
+            // again, and a service whose addresses never arrive is a service that
+            // never gets reported at all.
+            if self.queried.as_ref() == Some(&target) && !self.addresses.is_empty() {
+                // Same host, already answered: only a new port or TXT record is
+                // news, and the addresses will not change to announce it.
+                changed |= self.resolved.as_ref() != Some(&service);
+            } else {
+                self.addresses.clear();
+                self.address_queries = Some(self.query_context.query_addresses(
+                    &service.hostname,
+                    service.interface_index,
+                    self.address_sender.clone(),
+                )?);
+                self.queried = Some(target);
+            }
+
             self.resolved = Some(service);
         }
 
-        let mut changed = false;
         while let Ok(event) = self.address_receiver.try_recv() {
             let Some(service) = &self.resolved else {
                 continue;
@@ -349,7 +448,10 @@ impl Drop for DnssdAddressQueries {
 
 impl Drop for DnssdServiceResolver {
     fn drop(&mut self) {
-        let _ = &self.resolver;
+        // Each libcups object holds an `Arc` on the context it was created from, so
+        // a context outlives everything created on it whatever order these fields
+        // are dropped in.
+        let _ = (&self.address_queries, &self.resolver);
     }
 }
 
