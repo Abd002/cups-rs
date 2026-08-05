@@ -255,13 +255,6 @@ impl Job {
 }
 
 pub fn create_job(dest: &Destination, title: &str) -> Result<Job> {
-    if !dest.is_accepting_jobs() {
-        return Err(Error::PrinterNotAccepting(
-            dest.name.clone(),
-            "Printer is not accepting new jobs".to_string(),
-        ));
-    }
-
     let title_c = CString::new(title)?;
     let dest_info = dest.get_detailed_info(ptr::null_mut())?;
     let dest_ptr = dest.as_ptr();
@@ -311,13 +304,6 @@ pub fn create_job_with_options(
     title: &str,
     options: &PrintOptions,
 ) -> Result<Job> {
-    if !dest.is_accepting_jobs() {
-        return Err(Error::PrinterNotAccepting(
-            dest.name.clone(),
-            "Printer is not accepting new jobs".to_string(),
-        ));
-    }
-
     let title_c = CString::new(title)?;
     let dest_info = dest.get_detailed_info(ptr::null_mut())?;
     let dest_ptr = dest.as_ptr();

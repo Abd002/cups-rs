@@ -2,6 +2,10 @@ use crate::bindings;
 use crate::error::Error;
 use std::ffi::CStr;
 
+/// `server-error-not-accepting-jobs`, as reported by `cupsGetError`.
+const IPP_STATUS_ERROR_NOT_ACCEPTING_JOBS: i32 =
+    bindings::ipp_status_e_IPP_STATUS_ERROR_NOT_ACCEPTING_JOBS;
+
 pub fn get_cups_error_details() -> (i32, String) {
     unsafe {
         let error_code = bindings::cupsGetError();
@@ -30,6 +34,14 @@ pub fn cups_error_to_our_error(operation: &str, dest_name: Option<&str>) -> Erro
         404 => Error::DestinationNotFound(dest_name.unwrap_or("unknown").to_string()),
 
         503 => {
+            Error::PrinterNotAccepting(dest_name.unwrap_or("unknown").to_string(), message.clone())
+        }
+
+        // `cupsGetError` reports an IPP status, so a refusal to accept jobs arrives
+        // as `server-error-not-accepting-jobs` rather than as anything HTTP-shaped.
+        // Only the scheduler knows this, which is why it is not guessed at before
+        // submitting.
+        IPP_STATUS_ERROR_NOT_ACCEPTING_JOBS => {
             Error::PrinterNotAccepting(dest_name.unwrap_or("unknown").to_string(), message.clone())
         }
 
