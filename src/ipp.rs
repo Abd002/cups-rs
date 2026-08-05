@@ -78,7 +78,7 @@ impl IppTag {
     /// Returns `None` for values that are not group tags, so callers can reject
     /// an attribute that arrived in an unexpected part of a message instead of
     /// guessing.
-    pub fn from_code(code: bindings::ipp_tag_t) -> Option<Self> {
+    pub(crate) fn from_code(code: bindings::ipp_tag_t) -> Option<Self> {
         Some(match code {
             bindings::ipp_tag_e_IPP_TAG_ZERO => Self::Zero,
             bindings::ipp_tag_e_IPP_TAG_OPERATION => Self::Operation,
@@ -180,7 +180,7 @@ impl IppValueTag {
     /// Unrecognized tags become [`IppValueTag::Other`] rather than an error, so a
     /// peer sending something unexpected can be diagnosed instead of crashing
     /// the caller.
-    pub fn from_code(code: bindings::ipp_tag_t) -> Self {
+    pub(crate) fn from_code(code: bindings::ipp_tag_t) -> Self {
         match code {
             bindings::ipp_tag_e_IPP_TAG_INTEGER => Self::Integer,
             bindings::ipp_tag_e_IPP_TAG_BOOLEAN => Self::Boolean,
@@ -217,25 +217,10 @@ impl IppValueTag {
     ///
     /// Both the plain and the with-language forms qualify, because a peer may
     /// send either for the same attribute.
-    pub fn is_text_like(self) -> bool {
+    pub(crate) fn is_text_like(self) -> bool {
         matches!(
             self,
             Self::Text | Self::TextLang | Self::Name | Self::NameLang | Self::Keyword
-        )
-    }
-
-    /// Returns true when the value carries no usable data, such as
-    /// `no-value`, `unknown`, or `unsupported`.
-    pub fn is_out_of_band(self) -> bool {
-        matches!(
-            self,
-            Self::UnsupportedValue
-                | Self::Default
-                | Self::Unknown
-                | Self::NoValue
-                | Self::NotSettable
-                | Self::DeleteAttr
-                | Self::AdminDefine
         )
     }
 }
@@ -285,10 +270,6 @@ impl IppOperation {
     /// `PAPPL-Find-Drivers`, which asks a Printer Application which of its
     /// drivers match a device ID.
     pub const PAPPL_FIND_DRIVERS: Self = Self::Other(0x402c);
-
-    /// `PAPPL-Create-Printers`, which asks a Printer Application to create
-    /// printers for every device it can drive.
-    pub const PAPPL_CREATE_PRINTERS: Self = Self::Other(0x402d);
 
     /// Returns the numeric operation code sent on the wire.
     pub fn code(self) -> u16 {
@@ -818,7 +799,7 @@ impl IppAttribute {
     /// Returns `None` when the index is out of range or the attribute is not a
     /// collection, so a peer sending the wrong type cannot be misread as one.
     /// The returned collection borrows this attribute's message.
-    pub fn get_collection(&self, index: usize) -> Option<IppCollection<'_>> {
+    pub(crate) fn get_collection(&self, index: usize) -> Option<IppCollection<'_>> {
         if self.value_tag() != IppValueTag::BeginCollection || index >= self.count() {
             return None;
         }
@@ -908,19 +889,6 @@ impl IppCollection<'_> {
 
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
-
-    /// Returns every member of this collection.
-    pub fn members(&self) -> Vec<IppAttribute> {
-        let mut members = Vec::new();
-        let mut attr = unsafe { bindings::ippGetFirstAttribute(self.ipp) };
-
-        while !attr.is_null() {
-            members.push(IppAttribute { attr });
-            attr = unsafe { bindings::ippGetNextAttribute(self.ipp) };
-        }
-
-        members
-    }
 }
 
 #[cfg(test)]
@@ -983,7 +951,6 @@ mod tests {
     fn vendor_operations_keep_their_wire_codes() {
         assert_eq!(IppOperation::PAPPL_FIND_DEVICES.code(), 0x402b);
         assert_eq!(IppOperation::PAPPL_FIND_DRIVERS.code(), 0x402c);
-        assert_eq!(IppOperation::PAPPL_CREATE_PRINTERS.code(), 0x402d);
         assert_eq!(IppOperation::CreatePrinter.code(), 0x004c);
         assert_eq!(IppOperation::GetPrinters.code(), 0x004f);
     }
@@ -1001,7 +968,6 @@ mod tests {
             IppValueTag::BeginCollection
         );
         assert_eq!(IppValueTag::from_code(0x7e), IppValueTag::Other(0x7e));
-        assert!(IppValueTag::NoValue.is_out_of_band());
         assert!(IppValueTag::NameLang.is_text_like());
         assert!(!IppValueTag::Integer.is_text_like());
     }
@@ -1146,7 +1112,6 @@ mod tests {
                 .map(|member| member.value_tag()),
             Some(IppValueTag::Text)
         );
-        assert_eq!(collection.members().len(), 3);
         assert!(collection.find("smi55357-device-type").is_none());
     }
 
