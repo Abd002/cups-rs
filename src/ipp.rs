@@ -243,6 +243,19 @@ pub enum IppOperation {
     ReleaseJob,
     PausePrinter,
     ResumePrinter,
+    /// `Set-Printer-Attributes` (RFC 3380), which changes a printer's own values.
+    ///
+    /// A server states which of them it will accept in
+    /// `printer-settable-attributes-supported`, and answers
+    /// [`IppStatus::ErrorAttributesNotSettable`] for one it will not.
+    SetPrinterAttributes,
+    /// `Enable-Printer` (RFC 3998), which makes a printer accept jobs again.
+    ///
+    /// This is what CUPS calls `accept`, not what it calls `cupsenable` — that one is
+    /// [`IppOperation::ResumePrinter`], because the two vocabularies are swapped.
+    EnablePrinter,
+    /// `Disable-Printer` (RFC 3998), which makes a printer refuse new jobs.
+    DisablePrinter,
     /// IPP System Service `Create-Printer`.
     CreatePrinter,
     /// IPP System Service `Delete-Printer`.
@@ -294,6 +307,9 @@ impl From<IppOperation> for bindings::ipp_op_t {
             IppOperation::ReleaseJob => bindings::ipp_op_e_IPP_OP_RELEASE_JOB,
             IppOperation::PausePrinter => bindings::ipp_op_e_IPP_OP_PAUSE_PRINTER,
             IppOperation::ResumePrinter => bindings::ipp_op_e_IPP_OP_RESUME_PRINTER,
+            IppOperation::SetPrinterAttributes => bindings::ipp_op_e_IPP_OP_SET_PRINTER_ATTRIBUTES,
+            IppOperation::EnablePrinter => bindings::ipp_op_e_IPP_OP_ENABLE_PRINTER,
+            IppOperation::DisablePrinter => bindings::ipp_op_e_IPP_OP_DISABLE_PRINTER,
             IppOperation::CreatePrinter => bindings::ipp_op_e_IPP_OP_CREATE_PRINTER,
             IppOperation::DeletePrinter => bindings::ipp_op_e_IPP_OP_DELETE_PRINTER,
             IppOperation::GetPrinters => bindings::ipp_op_e_IPP_OP_GET_PRINTERS,
@@ -330,6 +346,12 @@ pub enum IppStatus {
     ErrorDocumentFormatNotSupported,
     ErrorOperationNotSupported,
     ErrorConflicting,
+    /// The server does not allow one of the attributes the request tried to change.
+    ///
+    /// Worth telling apart from a refusal: it says the operation was understood and
+    /// permitted, and only this attribute is out of reach — which is the difference
+    /// between falling back to another operation and giving up.
+    ErrorAttributesNotSettable,
     ErrorPrinterIsDeactivated,
     ErrorTooManyJobs,
     ErrorInternalError,
@@ -362,6 +384,9 @@ impl IppStatus {
                 IppStatus::ErrorOperationNotSupported
             }
             bindings::ipp_status_e_IPP_STATUS_ERROR_CONFLICTING => IppStatus::ErrorConflicting,
+            bindings::ipp_status_e_IPP_STATUS_ERROR_ATTRIBUTES_NOT_SETTABLE => {
+                IppStatus::ErrorAttributesNotSettable
+            }
             bindings::ipp_status_e_IPP_STATUS_ERROR_PRINTER_IS_DEACTIVATED => {
                 IppStatus::ErrorPrinterIsDeactivated
             }
@@ -971,6 +996,35 @@ mod tests {
         assert_eq!(IppOperation::PAPPL_FIND_DRIVERS.code(), 0x402c);
         assert_eq!(IppOperation::CreatePrinter.code(), 0x004c);
         assert_eq!(IppOperation::GetPrinters.code(), 0x004f);
+    }
+
+    /// The administration operations, whose codes decide whether a request reaches the
+    /// operation meant or a neighbouring one.
+    ///
+    /// The pairs are worth reading together, because CUPS and IPP use the words the other
+    /// way round: `cupsenable` is `Resume-Printer`, while `accept` is `Enable-Printer`.
+    #[test]
+    fn administration_operations_keep_their_wire_codes() {
+        assert_eq!(IppOperation::SetPrinterAttributes.code(), 0x0013);
+
+        assert_eq!(IppOperation::PausePrinter.code(), 0x0010);
+        assert_eq!(IppOperation::ResumePrinter.code(), 0x0011);
+
+        assert_eq!(IppOperation::EnablePrinter.code(), 0x0022);
+        assert_eq!(IppOperation::DisablePrinter.code(), 0x0023);
+    }
+
+    /// Being told an attribute cannot be set is not the same as being refused: it says
+    /// the operation was allowed and only this attribute is out of reach.
+    #[test]
+    fn an_unsettable_attribute_is_told_apart_from_a_refusal() {
+        let not_settable =
+            IppStatus::from_code(bindings::ipp_status_e_IPP_STATUS_ERROR_ATTRIBUTES_NOT_SETTABLE);
+
+        assert_eq!(not_settable, IppStatus::ErrorAttributesNotSettable);
+        assert!(!not_settable.is_successful());
+        assert_ne!(not_settable, IppStatus::ErrorInternalError);
+        assert_ne!(not_settable, IppStatus::ErrorNotAuthorized);
     }
 
     #[test]
