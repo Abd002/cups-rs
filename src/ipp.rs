@@ -834,6 +834,24 @@ impl IppAttribute {
         }
     }
 
+    /// Get an octetString value
+    ///
+    /// A few attributes carry structured text as an octetString rather than as text —
+    /// `printer-supply` is the common one — and the string accessor refuses those,
+    /// because CUPS will not read a value of one syntax as another.
+    pub fn get_octet_string(&self, index: usize) -> Option<Vec<u8>> {
+        unsafe {
+            let mut length = 0;
+            let data = bindings::ippGetOctetString(self.attr, index, &mut length);
+
+            if data.is_null() {
+                None
+            } else {
+                Some(std::slice::from_raw_parts(data as *const u8, length).to_vec())
+            }
+        }
+    }
+
     /// Get an integer value
     pub fn get_integer(&self, index: usize) -> i32 {
         unsafe { bindings::ippGetInteger(self.attr, index) }
