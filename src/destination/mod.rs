@@ -674,6 +674,58 @@ impl Destinations {
         Ok(loaded)
     }
 
+    /// Names the destination CUPS would print to when no destination is given.
+    ///
+    /// The whole of libcups' own precedence, in its order: `$LPDEST` or `$PRINTER`, then the
+    /// user's `lpoptions`, then the *system* `lpoptions`, then whatever the scheduler calls its
+    /// default. Only libcups knows where its system file lives — the path is fixed when the
+    /// library is built and it publishes no way to ask — so this asks the library rather than
+    /// working it out, which is also the only way to stay right on a machine whose CUPS was
+    /// built with different directories.
+    ///
+    /// `None` means there is genuinely no default, which is different from failing to find out.
+    /// Reading the user's saved file answers only part of the question: with nothing named there
+    /// a system-wide default or the scheduler's own is what a job would go to, and treating that
+    /// as "no default" points every job somewhere the user did not choose.
+    ///
+    /// Cheap enough to call whenever the answer is shown, unlike [`Destinations::get_default`]
+    /// which enumerates every destination — including waiting on DNS-SD — to find one name.
+    /// At worst this is one request to the local scheduler, and none at all when a file names
+    /// the default.
+    ///
+    /// A default naming a destination with no queue is reported as `None`: libcups looks such a
+    /// name up among the queues only. A caller that has already read the user's file knows about
+    /// that case and should prefer what the file said.
+    pub fn default_destination_name() -> Option<String> {
+        // CUPS_HTTP_DEFAULT, so libcups uses or makes its own connection.
+        let dest = unsafe { bindings::cupsGetNamedDest(ptr::null_mut(), ptr::null(), ptr::null()) };
+
+        if dest.is_null() {
+            return None;
+        }
+
+        let named = unsafe { &*dest };
+        let name = if named.name.is_null() {
+            None
+        } else {
+            let name = unsafe { CStr::from_ptr(named.name) }
+                .to_string_lossy()
+                .into_owned();
+
+            Some(if named.instance.is_null() {
+                name
+            } else {
+                let instance = unsafe { CStr::from_ptr(named.instance) }.to_string_lossy();
+                format!("{name}/{instance}")
+            })
+        };
+
+        // One destination, freed the way libcups frees any array of them.
+        unsafe { bindings::cupsFreeDests(1, dest) };
+
+        name.filter(|name| !name.is_empty())
+    }
+
     /// Adds one `Dest`/`Default` line's destination, options and all.
     fn load_saved_destination(&mut self, rest: &str, is_default: bool) -> Result<()> {
         // `name[/instance]` up to the first space, then the options. libcups splits the
