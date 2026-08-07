@@ -182,7 +182,7 @@ pub use constants::*;
 pub use destination::{
     Destination, DestinationInfo, Destinations, MediaSize, OptionConflict, PrinterState, copy_dest,
     enum_destinations, find_destinations, get_all_destinations, get_default_destination,
-    get_destination, remove_dest,
+    get_destination, legacy_lpoptions_path, remove_dest, user_lpoptions_path,
 };
 pub use dnssd::{
     Dnssd, DnssdBrowseEvent, DnssdBrowser, DnssdResolveEvent, DnssdResolvedService, DnssdResolver,

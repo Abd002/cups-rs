@@ -1028,14 +1028,27 @@ impl DestinationInfo {
     }
 }
 
-/// Returns the path of the user's `lpoptions` file.
+/// Returns the path of the user's `lpoptions` file, as this libcups reads and writes it.
 ///
 /// libcups keeps this path to itself, so it is worked out here the same way
 /// `_cupsGlobals` does (`cups/globals.c`). The two have to agree: `cupsSetDests` derives
 /// it again for itself when writing, so a different answer here would read one file and
 /// write another, and every saved destination the reader missed would be dropped.
-fn user_lpoptions_path() -> Result<String> {
+pub fn user_lpoptions_path() -> Result<String> {
     Ok(format!("{}/lpoptions", user_config_dir()?))
+}
+
+/// Returns the path libcups 2 reads the user's saved destinations from.
+///
+/// Always `~/.cups/lpoptions`, because libcups 2 knows nothing of `XDG_CONFIG_HOME` — where
+/// this libcups honours it and so may use `~/.config/cups/lpoptions` instead. When the two
+/// differ, a default saved through one library is invisible to the other, and on a desktop
+/// most print dialogs are still the other one. A caller that wants a preference to be honoured
+/// everywhere has to keep both in step.
+///
+/// `None` when there is no home directory to speak of.
+pub fn legacy_lpoptions_path() -> Option<String> {
+    home_dir().map(|home| format!("{home}/.cups/lpoptions"))
 }
 
 fn user_config_dir() -> Result<String> {
