@@ -233,16 +233,28 @@ impl Dnssd {
         })
     }
 
+    /// Starts the A and AAAA queries for a host.
+    ///
+    /// One family failing says nothing about the other, and a host answering over IPv4 alone is
+    /// ordinary. Giving up the query that started because the other did not left the service with no
+    /// addresses at all, and a service whose addresses never arrive is never reported. So whichever
+    /// started is kept, and this fails only when neither did.
     fn query_addresses(
         &self,
         hostname: &str,
         interface_index: u32,
         sender: Sender<DnssdAddressEvent>,
     ) -> Result<DnssdAddressQueries> {
-        let ipv4 = self.query_address(hostname, interface_index, 1, sender.clone())?;
-        let ipv6 = self.query_address(hostname, interface_index, 28, sender)?;
+        let ipv4 = self.query_address(hostname, interface_index, 1, sender.clone());
+        let ipv6 = self.query_address(hostname, interface_index, 28, sender);
 
-        Ok(DnssdAddressQueries { ipv4, ipv6 })
+        match (ipv4, ipv6) {
+            (Err(error), Err(_)) => Err(error),
+            (ipv4, ipv6) => Ok(DnssdAddressQueries {
+                ipv4: ipv4.ok(),
+                ipv6: ipv6.ok(),
+            }),
+        }
     }
 
     fn query_address(
@@ -342,9 +354,10 @@ pub struct DnssdServiceResolver {
     addresses: Vec<IpAddr>,
 }
 
+/// The running A and AAAA queries for one host, either of which a host may not answer for.
 struct DnssdAddressQueries {
-    ipv4: DnssdQuery,
-    ipv6: DnssdQuery,
+    ipv4: Option<DnssdQuery>,
+    ipv6: Option<DnssdQuery>,
 }
 
 struct DnssdQuery {
@@ -369,21 +382,33 @@ impl DnssdServiceResolver {
             // have not answered yet — an announcement is the natural moment to ask
             // again, and a service whose addresses never arrive is a service that
             // never gets reported at all.
+            let mut started = Ok(());
             if self.queried.as_ref() == Some(&target) && !self.addresses.is_empty() {
                 // Same host, already answered: only a new port or TXT record is
                 // news, and the addresses will not change to announce it.
                 changed |= self.resolved.as_ref() != Some(&service);
             } else {
-                self.addresses.clear();
-                self.address_queries = Some(self.query_context.query_addresses(
+                match self.query_context.query_addresses(
                     &service.hostname,
                     service.interface_index,
                     self.address_sender.clone(),
-                )?);
-                self.queried = Some(target);
+                ) {
+                    Ok(queries) => {
+                        self.addresses.clear();
+                        self.address_queries = Some(queries);
+                        self.queried = Some(target);
+                    }
+                    Err(error) => started = Err(error),
+                }
             }
 
+            // Recorded whatever happened above, because the announcement has already left the
+            // channel: letting a failure past this point threw the service away entirely, and
+            // nothing else here asks after it — the only thing that would is another announcement,
+            // which may be minutes off or may never come. Remembered with no addresses against it,
+            // the next announcement comes straight back to the branch above and tries again.
             self.resolved = Some(service);
+            started?;
         }
 
         while let Ok(event) = self.address_receiver.try_recv() {
