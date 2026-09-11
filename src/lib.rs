@@ -182,7 +182,7 @@ pub use constants::*;
 pub use destination::{
     Destination, DestinationInfo, Destinations, MediaSize, OptionConflict, PrinterState, copy_dest,
     enum_destinations, find_destinations, get_all_destinations, get_default_destination,
-    get_destination, legacy_lpoptions_path, remove_dest, user_lpoptions_path,
+    get_destination, remove_dest,
 };
 pub use dnssd::{
     Dnssd, DnssdBrowseEvent, DnssdBrowser, DnssdResolveEvent, DnssdResolvedService, DnssdResolver,
@@ -190,8 +190,7 @@ pub use dnssd::{
 };
 pub use error::{Error, ErrorCategory, Result};
 pub use ipp::{
-    IppAttribute, IppCollection, IppOperation, IppRequest, IppResponse, IppStatus, IppTag,
-    IppValueTag,
+    IppAttribute, IppOperation, IppRequest, IppResponse, IppStatus, IppTag, IppValueTag,
 };
 pub use job::{
     ColorMode, DuplexMode, FORMAT_JPEG, FORMAT_PDF, FORMAT_POSTSCRIPT, FORMAT_TEXT, JobInfo,

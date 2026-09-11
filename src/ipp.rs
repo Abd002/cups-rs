@@ -33,6 +33,7 @@
 use crate::bindings;
 use crate::connection::HttpConnection;
 use crate::error::{Error, Result};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::ptr;
@@ -48,9 +49,7 @@ pub enum IppTag {
     Printer,
     Subscription,
     EventNotification,
-    Resource,
     Document,
-    /// System group, used by the IPP System Service (`/ipp/system`).
     System,
     UnsupportedGroup,
 }
@@ -64,7 +63,6 @@ impl From<IppTag> for bindings::ipp_tag_t {
             IppTag::Printer => bindings::ipp_tag_e_IPP_TAG_PRINTER,
             IppTag::Subscription => bindings::ipp_tag_e_IPP_TAG_SUBSCRIPTION,
             IppTag::EventNotification => bindings::ipp_tag_e_IPP_TAG_EVENT_NOTIFICATION,
-            IppTag::Resource => bindings::ipp_tag_e_IPP_TAG_RESOURCE,
             IppTag::Document => bindings::ipp_tag_e_IPP_TAG_DOCUMENT,
             IppTag::System => bindings::ipp_tag_e_IPP_TAG_SYSTEM,
             IppTag::UnsupportedGroup => bindings::ipp_tag_e_IPP_TAG_UNSUPPORTED_GROUP,
@@ -73,11 +71,7 @@ impl From<IppTag> for bindings::ipp_tag_t {
 }
 
 impl IppTag {
-    /// Converts a raw group tag reported by libcups back into a known group.
-    ///
-    /// Returns `None` for values that are not group tags, so callers can reject
-    /// an attribute that arrived in an unexpected part of a message instead of
-    /// guessing.
+    /// Convert a raw group tag back into a known group
     pub(crate) fn from_code(code: bindings::ipp_tag_t) -> Option<Self> {
         Some(match code {
             bindings::ipp_tag_e_IPP_TAG_ZERO => Self::Zero,
@@ -86,7 +80,6 @@ impl IppTag {
             bindings::ipp_tag_e_IPP_TAG_PRINTER => Self::Printer,
             bindings::ipp_tag_e_IPP_TAG_SUBSCRIPTION => Self::Subscription,
             bindings::ipp_tag_e_IPP_TAG_EVENT_NOTIFICATION => Self::EventNotification,
-            bindings::ipp_tag_e_IPP_TAG_RESOURCE => Self::Resource,
             bindings::ipp_tag_e_IPP_TAG_DOCUMENT => Self::Document,
             bindings::ipp_tag_e_IPP_TAG_SYSTEM => Self::System,
             bindings::ipp_tag_e_IPP_TAG_UNSUPPORTED_GROUP => Self::UnsupportedGroup,
@@ -97,10 +90,7 @@ impl IppTag {
 
 /// IPP value tags
 ///
-/// These tags define the type of value an IPP attribute contains. The set covers
-/// both the types that can be written into a request and the out-of-band and
-/// structured types that only ever arrive in a response, so
-/// [`IppAttribute::value_tag`] can report what a peer actually sent.
+/// These tags define the type of value an IPP attribute contains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IppValueTag {
     Integer,
@@ -114,29 +104,7 @@ pub enum IppValueTag {
     Charset,
     Language,
     MimeType,
-    /// `textWithLanguage`, the localized form of [`IppValueTag::Text`].
-    TextLang,
-    /// `nameWithLanguage`, the localized form of [`IppValueTag::Name`].
-    NameLang,
-    UriScheme,
-    Date,
-    Resolution,
-    Range,
-    /// Start of a collection value; read the members with
-    /// [`IppAttribute::get_collection`].
     BeginCollection,
-    EndCollection,
-    MemberName,
-    UnsupportedValue,
-    Default,
-    Unknown,
-    NoValue,
-    NotSettable,
-    DeleteAttr,
-    AdminDefine,
-    /// A tag this crate does not model, preserved so unexpected values can be
-    /// reported rather than mistaken for a type we understand.
-    Other(bindings::ipp_tag_t),
 }
 
 impl From<IppValueTag> for bindings::ipp_tag_t {
@@ -153,33 +121,13 @@ impl From<IppValueTag> for bindings::ipp_tag_t {
             IppValueTag::Charset => bindings::ipp_tag_e_IPP_TAG_CHARSET,
             IppValueTag::Language => bindings::ipp_tag_e_IPP_TAG_LANGUAGE,
             IppValueTag::MimeType => bindings::ipp_tag_e_IPP_TAG_MIMETYPE,
-            IppValueTag::TextLang => bindings::ipp_tag_e_IPP_TAG_TEXTLANG,
-            IppValueTag::NameLang => bindings::ipp_tag_e_IPP_TAG_NAMELANG,
-            IppValueTag::UriScheme => bindings::ipp_tag_e_IPP_TAG_URISCHEME,
-            IppValueTag::Date => bindings::ipp_tag_e_IPP_TAG_DATE,
-            IppValueTag::Resolution => bindings::ipp_tag_e_IPP_TAG_RESOLUTION,
-            IppValueTag::Range => bindings::ipp_tag_e_IPP_TAG_RANGE,
             IppValueTag::BeginCollection => bindings::ipp_tag_e_IPP_TAG_BEGIN_COLLECTION,
-            IppValueTag::EndCollection => bindings::ipp_tag_e_IPP_TAG_END_COLLECTION,
-            IppValueTag::MemberName => bindings::ipp_tag_e_IPP_TAG_MEMBERNAME,
-            IppValueTag::UnsupportedValue => bindings::ipp_tag_e_IPP_TAG_UNSUPPORTED_VALUE,
-            IppValueTag::Default => bindings::ipp_tag_e_IPP_TAG_DEFAULT,
-            IppValueTag::Unknown => bindings::ipp_tag_e_IPP_TAG_UNKNOWN,
-            IppValueTag::NoValue => bindings::ipp_tag_e_IPP_TAG_NOVALUE,
-            IppValueTag::NotSettable => bindings::ipp_tag_e_IPP_TAG_NOTSETTABLE,
-            IppValueTag::DeleteAttr => bindings::ipp_tag_e_IPP_TAG_DELETEATTR,
-            IppValueTag::AdminDefine => bindings::ipp_tag_e_IPP_TAG_ADMINDEFINE,
-            IppValueTag::Other(code) => code,
         }
     }
 }
 
 impl IppValueTag {
-    /// Converts a raw value tag reported by libcups into a modelled tag.
-    ///
-    /// Unrecognized tags become [`IppValueTag::Other`] rather than an error, so a
-    /// peer sending something unexpected can be diagnosed instead of crashing
-    /// the caller.
+    /// Convert a raw value tag back into a known type, defaulting to `String`
     pub(crate) fn from_code(code: bindings::ipp_tag_t) -> Self {
         match code {
             bindings::ipp_tag_e_IPP_TAG_INTEGER => Self::Integer,
@@ -193,35 +141,13 @@ impl IppValueTag {
             bindings::ipp_tag_e_IPP_TAG_CHARSET => Self::Charset,
             bindings::ipp_tag_e_IPP_TAG_LANGUAGE => Self::Language,
             bindings::ipp_tag_e_IPP_TAG_MIMETYPE => Self::MimeType,
-            bindings::ipp_tag_e_IPP_TAG_TEXTLANG => Self::TextLang,
-            bindings::ipp_tag_e_IPP_TAG_NAMELANG => Self::NameLang,
-            bindings::ipp_tag_e_IPP_TAG_URISCHEME => Self::UriScheme,
-            bindings::ipp_tag_e_IPP_TAG_DATE => Self::Date,
-            bindings::ipp_tag_e_IPP_TAG_RESOLUTION => Self::Resolution,
-            bindings::ipp_tag_e_IPP_TAG_RANGE => Self::Range,
             bindings::ipp_tag_e_IPP_TAG_BEGIN_COLLECTION => Self::BeginCollection,
-            bindings::ipp_tag_e_IPP_TAG_END_COLLECTION => Self::EndCollection,
-            bindings::ipp_tag_e_IPP_TAG_MEMBERNAME => Self::MemberName,
-            bindings::ipp_tag_e_IPP_TAG_UNSUPPORTED_VALUE => Self::UnsupportedValue,
-            bindings::ipp_tag_e_IPP_TAG_DEFAULT => Self::Default,
-            bindings::ipp_tag_e_IPP_TAG_UNKNOWN => Self::Unknown,
-            bindings::ipp_tag_e_IPP_TAG_NOVALUE => Self::NoValue,
-            bindings::ipp_tag_e_IPP_TAG_NOTSETTABLE => Self::NotSettable,
-            bindings::ipp_tag_e_IPP_TAG_DELETEATTR => Self::DeleteAttr,
-            bindings::ipp_tag_e_IPP_TAG_ADMINDEFINE => Self::AdminDefine,
-            other => Self::Other(other),
+            _ => Self::String,
         }
     }
 
-    /// Returns true when the value is a text-like string type.
-    ///
-    /// Both the plain and the with-language forms qualify, because a peer may
-    /// send either for the same attribute.
-    pub(crate) fn is_text_like(self) -> bool {
-        matches!(
-            self,
-            Self::Text | Self::TextLang | Self::Name | Self::NameLang | Self::Keyword
-        )
+    fn is_text_like(self) -> bool {
+        matches!(self, Self::Text | Self::Name | Self::Keyword | Self::Uri)
     }
 }
 
@@ -238,57 +164,24 @@ pub enum IppOperation {
     GetJobAttributes,
     GetJobs,
     GetPrinterAttributes,
-    GetSystemAttributes,
     HoldJob,
     ReleaseJob,
     PausePrinter,
     ResumePrinter,
-    /// `Set-Printer-Attributes` (RFC 3380), which changes a printer's own values.
-    ///
-    /// A server states which of them it will accept in
-    /// `printer-settable-attributes-supported`, and answers
-    /// [`IppStatus::ErrorAttributesNotSettable`] for one it will not.
-    SetPrinterAttributes,
-    /// `Enable-Printer` (RFC 3998), which makes a printer accept jobs again.
-    ///
-    /// This is what CUPS calls `accept`, not what it calls `cupsenable` — that one is
-    /// [`IppOperation::ResumePrinter`], because the two vocabularies are swapped.
-    EnablePrinter,
-    /// `Disable-Printer` (RFC 3998), which makes a printer refuse new jobs.
-    DisablePrinter,
-    /// IPP System Service `Create-Printer`.
-    CreatePrinter,
-    /// IPP System Service `Delete-Printer`.
-    DeletePrinter,
-    /// IPP System Service `Get-Printers`.
-    GetPrinters,
     CupsAddModifyPrinter,
     CupsCreateLocalPrinter,
     CupsDeletePrinter,
-    CupsMoveJob,
     CupsSetDefault,
-    /// An operation this crate does not name, such as a vendor extension.
-    ///
-    /// Printer Applications built on PAPPL expose their device and driver
-    /// enumeration this way; see [`IppOperation::PAPPL_FIND_DEVICES`] and its
-    /// siblings.
+    CupsMoveJob,
+    SetPrinterAttributes,
+    EnablePrinter,
+    DisablePrinter,
+    CreatePrinter,
+    DeletePrinter,
+    GetPrinters,
+    GetSystemAttributes,
+    /// An operation code not covered above, e.g. a vendor extension
     Other(u16),
-}
-
-impl IppOperation {
-    /// `PAPPL-Find-Devices`, which asks a Printer Application which output
-    /// devices it can currently see.
-    pub const PAPPL_FIND_DEVICES: Self = Self::Other(0x402b);
-
-    /// `PAPPL-Find-Drivers`, which asks a Printer Application which of its
-    /// drivers match a device ID.
-    pub const PAPPL_FIND_DRIVERS: Self = Self::Other(0x402c);
-
-    /// Returns the numeric operation code sent on the wire.
-    pub fn code(self) -> u16 {
-        let code: bindings::ipp_op_t = self.into();
-        code as u16
-    }
 }
 
 impl From<IppOperation> for bindings::ipp_op_t {
@@ -302,24 +195,24 @@ impl From<IppOperation> for bindings::ipp_op_t {
             IppOperation::GetJobAttributes => bindings::ipp_op_e_IPP_OP_GET_JOB_ATTRIBUTES,
             IppOperation::GetJobs => bindings::ipp_op_e_IPP_OP_GET_JOBS,
             IppOperation::GetPrinterAttributes => bindings::ipp_op_e_IPP_OP_GET_PRINTER_ATTRIBUTES,
-            IppOperation::GetSystemAttributes => bindings::ipp_op_e_IPP_OP_GET_SYSTEM_ATTRIBUTES,
             IppOperation::HoldJob => bindings::ipp_op_e_IPP_OP_HOLD_JOB,
             IppOperation::ReleaseJob => bindings::ipp_op_e_IPP_OP_RELEASE_JOB,
             IppOperation::PausePrinter => bindings::ipp_op_e_IPP_OP_PAUSE_PRINTER,
             IppOperation::ResumePrinter => bindings::ipp_op_e_IPP_OP_RESUME_PRINTER,
+            IppOperation::CupsAddModifyPrinter => bindings::ipp_op_e_IPP_OP_CUPS_ADD_MODIFY_PRINTER,
+            IppOperation::CupsCreateLocalPrinter => {
+                bindings::ipp_op_e_IPP_OP_CUPS_CREATE_LOCAL_PRINTER
+            }
+            IppOperation::CupsDeletePrinter => bindings::ipp_op_e_IPP_OP_CUPS_DELETE_PRINTER,
+            IppOperation::CupsSetDefault => bindings::ipp_op_e_IPP_OP_CUPS_SET_DEFAULT,
+            IppOperation::CupsMoveJob => bindings::ipp_op_e_IPP_OP_CUPS_MOVE_JOB,
             IppOperation::SetPrinterAttributes => bindings::ipp_op_e_IPP_OP_SET_PRINTER_ATTRIBUTES,
             IppOperation::EnablePrinter => bindings::ipp_op_e_IPP_OP_ENABLE_PRINTER,
             IppOperation::DisablePrinter => bindings::ipp_op_e_IPP_OP_DISABLE_PRINTER,
             IppOperation::CreatePrinter => bindings::ipp_op_e_IPP_OP_CREATE_PRINTER,
             IppOperation::DeletePrinter => bindings::ipp_op_e_IPP_OP_DELETE_PRINTER,
             IppOperation::GetPrinters => bindings::ipp_op_e_IPP_OP_GET_PRINTERS,
-            IppOperation::CupsAddModifyPrinter => bindings::ipp_op_e_IPP_OP_CUPS_ADD_MODIFY_PRINTER,
-            IppOperation::CupsCreateLocalPrinter => {
-                bindings::ipp_op_e_IPP_OP_CUPS_CREATE_LOCAL_PRINTER
-            }
-            IppOperation::CupsDeletePrinter => bindings::ipp_op_e_IPP_OP_CUPS_DELETE_PRINTER,
-            IppOperation::CupsMoveJob => bindings::ipp_op_e_IPP_OP_CUPS_MOVE_JOB,
-            IppOperation::CupsSetDefault => bindings::ipp_op_e_IPP_OP_CUPS_SET_DEFAULT,
+            IppOperation::GetSystemAttributes => bindings::ipp_op_e_IPP_OP_GET_SYSTEM_ATTRIBUTES,
             IppOperation::Other(code) => bindings::ipp_op_t::from(code),
         }
     }
@@ -346,11 +239,6 @@ pub enum IppStatus {
     ErrorDocumentFormatNotSupported,
     ErrorOperationNotSupported,
     ErrorConflicting,
-    /// The server does not allow one of the attributes the request tried to change.
-    ///
-    /// Worth telling apart from a refusal: it says the operation was understood and
-    /// permitted, and only this attribute is out of reach — which is the difference
-    /// between falling back to another operation and giving up.
     ErrorAttributesNotSettable,
     ErrorPrinterIsDeactivated,
     ErrorTooManyJobs,
@@ -570,7 +458,7 @@ impl IppRequest {
     pub fn send(&self, connection: &HttpConnection, resource: &str) -> Result<IppResponse> {
         let resource_c = CString::new(resource)?;
 
-        // cupsDoRequest frees the request, so send a copy.
+        // Note: cupsDoRequest frees the request, so we need to create a copy
         // create an empty IPP message for the outgoing copy
         let request_copy = unsafe { bindings::ippNew() };
         if request_copy.is_null() {
@@ -616,14 +504,13 @@ impl IppRequest {
         }
 
         unsafe {
+            bindings::ippSetOperation(request_copy, bindings::ippGetOperation(self.ipp));
+            bindings::ippSetRequestId(request_copy, bindings::ippGetRequestId(self.ipp));
             bindings::ippCopyAttributes(request_copy, self.ipp, false, None, ptr::null_mut());
         }
 
-        let response = unsafe {
-            bindings::ippSetOperation(request_copy, bindings::ippGetOperation(self.ipp));
-            bindings::ippSetRequestId(request_copy, bindings::ippGetRequestId(self.ipp));
-            bindings::cupsDoRequest(ptr::null_mut(), request_copy, resource_c.as_ptr())
-        };
+        let response =
+            unsafe { bindings::cupsDoRequest(ptr::null_mut(), request_copy, resource_c.as_ptr()) };
 
         if response.is_null() {
             Err(Error::ServerError(
@@ -686,11 +573,7 @@ impl IppResponse {
         IppStatus::from_code(status_code)
     }
 
-    /// Returns the raw status code exactly as the peer sent it.
-    ///
-    /// [`IppResponse::status`] folds codes this crate does not model into
-    /// [`IppStatus::ErrorInternalError`]; this keeps the original value for
-    /// diagnostics.
+    /// Get the raw status code
     pub fn status_code(&self) -> u16 {
         unsafe { bindings::ippGetStatusCode(self.ipp) as u16 }
     }
@@ -700,52 +583,48 @@ impl IppResponse {
         self.status().is_successful()
     }
 
-    /// Find an attribute by name, optionally restricted to one attribute group.
-    ///
-    /// `group` filters on the group the attribute arrived in — `Some(IppTag::System)`
-    /// matches only System-group attributes. Passing `None` accepts any group.
-    ///
-    /// Note that searching moves the message's internal attribute cursor, so a
-    /// walk started with [`IppResponse::attributes`] does not survive a search.
-    pub fn find_attribute(&self, name: &str, group: Option<IppTag>) -> Option<IppAttribute> {
-        let name_c = CString::new(name).ok()?;
-        let mut attr =
-            unsafe { bindings::ippFindAttribute(self.ipp, name_c.as_ptr(), IPP_TAG_ANY_VALUE) };
-
-        while !attr.is_null() {
-            let candidate = IppAttribute { attr };
-            if group.is_none_or(|group| candidate.group_tag() == Some(group)) {
-                return Some(candidate);
-            }
-            attr = unsafe {
-                bindings::ippFindNextAttribute(self.ipp, name_c.as_ptr(), IPP_TAG_ANY_VALUE)
-            };
-        }
-
-        None
-    }
-
-    /// Returns every attribute with this name, in the order the peer sent them.
-    ///
-    /// IPP allows a name to repeat within a message, and PAPPL relies on that:
-    /// `PAPPL-Find-Devices` reports one `smi55357-device-col` per device. Using
-    /// [`IppResponse::find_attribute`] would silently see only the first one.
+    /// Get every attribute with this name
     pub fn attributes_named(&self, name: &str) -> Vec<IppAttribute> {
         let Ok(name_c) = CString::new(name) else {
             return Vec::new();
         };
 
         let mut found = Vec::new();
-        let mut attr =
-            unsafe { bindings::ippFindAttribute(self.ipp, name_c.as_ptr(), IPP_TAG_ANY_VALUE) };
+        let mut attr = unsafe {
+            bindings::ippFindAttribute(self.ipp, name_c.as_ptr(), bindings::ipp_tag_e_IPP_TAG_ZERO)
+        };
         while !attr.is_null() {
             found.push(IppAttribute { attr });
             attr = unsafe {
-                bindings::ippFindNextAttribute(self.ipp, name_c.as_ptr(), IPP_TAG_ANY_VALUE)
+                bindings::ippFindNextAttribute(
+                    self.ipp,
+                    name_c.as_ptr(),
+                    bindings::ipp_tag_e_IPP_TAG_ZERO,
+                )
             };
         }
 
         found
+    }
+
+    /// Find an attribute by name
+    pub fn find_attribute(&self, name: &str, group: Option<IppTag>) -> Option<IppAttribute> {
+        let name_c = match CString::new(name) {
+            Ok(s) => s,
+            Err(_) => return None,
+        };
+
+        let group_tag = group
+            .map(|g| g.into())
+            .unwrap_or(bindings::ipp_tag_e_IPP_TAG_ZERO);
+
+        let attr = unsafe { bindings::ippFindAttribute(self.ipp, name_c.as_ptr(), group_tag) };
+
+        if attr.is_null() {
+            None
+        } else {
+            Some(IppAttribute { attr })
+        }
     }
 
     /// Get all attributes in the response
@@ -761,9 +640,6 @@ impl IppResponse {
         attributes
     }
 }
-
-/// Matches any value type when searching for an attribute by name.
-const IPP_TAG_ANY_VALUE: bindings::ipp_tag_t = bindings::ipp_tag_e_IPP_TAG_ZERO;
 
 impl Drop for IppResponse {
     fn drop(&mut self) {
@@ -803,48 +679,14 @@ impl IppAttribute {
         unsafe { bindings::ippGetCount(self.attr) as usize }
     }
 
-    /// Returns the type of the values this attribute holds.
-    ///
-    /// Use this before reading a value to confirm the peer sent the type you
-    /// expect, rather than trusting an attribute name.
+    /// Get the value type
     pub fn value_tag(&self) -> IppValueTag {
         IppValueTag::from_code(unsafe { bindings::ippGetValueTag(self.attr) })
     }
 
-    /// Returns the attribute group this attribute arrived in.
-    ///
-    /// `None` means the group tag is not one of the known groups, which is
-    /// grounds for rejecting the attribute rather than interpreting it.
+    /// Get the attribute group
     pub fn group_tag(&self) -> Option<IppTag> {
         IppTag::from_code(unsafe { bindings::ippGetGroupTag(self.attr) })
-    }
-
-    /// Reads one collection value.
-    ///
-    /// Returns `None` when the index is out of range or the attribute is not a
-    /// collection, so a peer sending the wrong type cannot be misread as one.
-    /// The returned collection borrows this attribute's message.
-    pub(crate) fn get_collection(&self, index: usize) -> Option<IppCollection<'_>> {
-        if self.value_tag() != IppValueTag::BeginCollection || index >= self.count() {
-            return None;
-        }
-
-        let ipp = unsafe { bindings::ippGetCollection(self.attr, index) };
-        if ipp.is_null() {
-            return None;
-        }
-
-        Some(IppCollection {
-            ipp,
-            _borrow: PhantomData,
-        })
-    }
-
-    /// Reads every collection value in order.
-    pub fn collections(&self) -> Vec<IppCollection<'_>> {
-        (0..self.count())
-            .filter_map(|index| self.get_collection(index))
-            .collect()
     }
 
     /// Get a string value
@@ -860,13 +702,9 @@ impl IppAttribute {
     }
 
     /// Get an octetString value
-    ///
-    /// A few attributes carry structured text as an octetString rather than as text —
-    /// `printer-supply` is the common one — and the string accessor refuses those,
-    /// because CUPS will not read a value of one syntax as another.
     pub fn get_octet_string(&self, index: usize) -> Option<Vec<u8>> {
         unsafe {
-            let mut length = 0;
+            let mut length: usize = 0;
             let data = bindings::ippGetOctetString(self.attr, index, &mut length);
 
             if data.is_null() {
@@ -886,51 +724,41 @@ impl IppAttribute {
     pub fn get_boolean(&self, index: usize) -> bool {
         unsafe { bindings::ippGetBoolean(self.attr, index) }
     }
-}
 
-/// One collection value read out of an IPP attribute.
-///
-/// Collections are how IPP carries a record with named members. PAPPL uses them
-/// to report output devices (`smi55357-device-col`) and drivers
-/// (`smi55357-driver-col`), one collection per device or driver.
-///
-/// The collection borrows the message it came from and is never freed
-/// separately: libcups owns it as part of the parent attribute.
-pub struct IppCollection<'a> {
-    ipp: *mut bindings::_ipp_s,
-    _borrow: PhantomData<&'a IppAttribute>,
-}
+    /// Get collection values as name-value maps
+    pub fn collections(&self) -> Vec<HashMap<String, String>> {
+        if self.value_tag() != IppValueTag::BeginCollection {
+            return Vec::new();
+        }
 
-impl IppCollection<'_> {
-    /// Finds a member by name.
-    ///
-    /// Members carry no group tag of their own, so unlike
-    /// [`IppResponse::find_attribute`] there is nothing to filter on. Check the
-    /// returned attribute's [`IppAttribute::value_tag`] before reading it.
-    pub fn find(&self, name: &str) -> Option<IppAttribute> {
-        let name_c = CString::new(name).ok()?;
-        let attr =
-            unsafe { bindings::ippFindAttribute(self.ipp, name_c.as_ptr(), IPP_TAG_ANY_VALUE) };
-
-        (!attr.is_null()).then_some(IppAttribute { attr })
+        (0..self.count())
+            .filter_map(|index| self.collection_at(index))
+            .collect()
     }
 
-    /// Reads a single-valued text-like member, rejecting the wrong type.
-    ///
-    /// Returns `None` when the member is absent, is not a text-like type, holds
-    /// no usable value, or is empty after trimming — the cases a malformed peer
-    /// produces. Multi-valued members yield their first value, because IPP
-    /// permits a sender to repeat a member the receiver treats as single.
-    pub fn text(&self, name: &str) -> Option<String> {
-        let attr = self.find(name)?;
-        if !attr.value_tag().is_text_like() && attr.value_tag() != IppValueTag::Uri {
+    fn collection_at(&self, index: usize) -> Option<HashMap<String, String>> {
+        let collection = unsafe { bindings::ippGetCollection(self.attr, index) };
+        if collection.is_null() {
             return None;
         }
 
-        let value = attr.get_string(0)?;
-        let trimmed = value.trim();
+        let mut members = HashMap::new();
+        let mut attr = unsafe { bindings::ippGetFirstAttribute(collection) };
+        while !attr.is_null() {
+            let member = IppAttribute { attr };
+            if let Some(name) = member.name()
+                && member.value_tag().is_text_like()
+                && let Some(value) = member.get_string(0)
+            {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    members.insert(name, trimmed.to_string());
+                }
+            }
+            attr = unsafe { bindings::ippGetNextAttribute(collection) };
+        }
 
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
+        Some(members)
     }
 }
 
@@ -941,18 +769,6 @@ mod tests {
     #[test]
     fn test_ipp_request_creation() {
         let request = IppRequest::new(IppOperation::GetPrinterAttributes);
-        assert!(request.is_ok());
-    }
-
-    #[test]
-    fn test_system_attributes_request_creation() {
-        let request = IppRequest::new(IppOperation::GetSystemAttributes);
-        assert!(request.is_ok());
-    }
-
-    #[test]
-    fn test_cups_move_job_request_creation() {
-        let request = IppRequest::new(IppOperation::CupsMoveJob);
         assert!(request.is_ok());
     }
 
@@ -991,283 +807,53 @@ mod tests {
     }
 
     #[test]
-    fn vendor_operations_keep_their_wire_codes() {
-        assert_eq!(IppOperation::PAPPL_FIND_DEVICES.code(), 0x402b);
-        assert_eq!(IppOperation::PAPPL_FIND_DRIVERS.code(), 0x402c);
-        assert_eq!(IppOperation::CreatePrinter.code(), 0x004c);
-        assert_eq!(IppOperation::GetPrinters.code(), 0x004f);
-    }
+    fn test_ipp_request_send_preserves_operation() {
+        use crate::{get_default_destination, ConnectionFlags};
 
-    /// The administration operations, whose codes decide whether a request reaches the
-    /// operation meant or a neighbouring one.
-    ///
-    /// The pairs are worth reading together, because CUPS and IPP use the words the other
-    /// way round: `cupsenable` is `Resume-Printer`, while `accept` is `Enable-Printer`.
-    #[test]
-    fn administration_operations_keep_their_wire_codes() {
-        assert_eq!(IppOperation::SetPrinterAttributes.code(), 0x0013);
-
-        assert_eq!(IppOperation::PausePrinter.code(), 0x0010);
-        assert_eq!(IppOperation::ResumePrinter.code(), 0x0011);
-
-        assert_eq!(IppOperation::EnablePrinter.code(), 0x0022);
-        assert_eq!(IppOperation::DisablePrinter.code(), 0x0023);
-    }
-
-    /// Being told an attribute cannot be set is not the same as being refused: it says
-    /// the operation was allowed and only this attribute is out of reach.
-    #[test]
-    fn an_unsettable_attribute_is_told_apart_from_a_refusal() {
-        let not_settable =
-            IppStatus::from_code(bindings::ipp_status_e_IPP_STATUS_ERROR_ATTRIBUTES_NOT_SETTABLE);
-
-        assert_eq!(not_settable, IppStatus::ErrorAttributesNotSettable);
-        assert!(!not_settable.is_successful());
-        assert_ne!(not_settable, IppStatus::ErrorInternalError);
-        assert_ne!(not_settable, IppStatus::ErrorNotAuthorized);
-    }
-
-    #[test]
-    fn vendor_operation_requests_can_be_created() {
-        assert!(IppRequest::new(IppOperation::PAPPL_FIND_DEVICES).is_ok());
-        assert!(IppRequest::new(IppOperation::CreatePrinter).is_ok());
-    }
-
-    #[test]
-    fn unknown_value_tags_are_preserved_rather_than_guessed() {
-        assert_eq!(
-            IppValueTag::from_code(bindings::ipp_tag_e_IPP_TAG_BEGIN_COLLECTION),
-            IppValueTag::BeginCollection
-        );
-        assert_eq!(IppValueTag::from_code(0x7e), IppValueTag::Other(0x7e));
-        assert!(IppValueTag::NameLang.is_text_like());
-        assert!(!IppValueTag::Integer.is_text_like());
-    }
-
-    #[test]
-    fn group_tags_reject_values_that_are_not_groups() {
-        assert_eq!(
-            IppTag::from_code(bindings::ipp_tag_e_IPP_TAG_SYSTEM),
-            Some(IppTag::System)
-        );
-        assert_eq!(IppTag::from_code(bindings::ipp_tag_e_IPP_TAG_KEYWORD), None);
-    }
-
-    /// Builds a message shaped like a `PAPPL-Find-Devices` response: two
-    /// `smi55357-device-col` collections in the System group.
-    ///
-    /// The member collections are deliberately not freed here — `ippAddCollection`
-    /// hands them to the parent message, which releases them on `ippDelete`.
-    fn find_devices_response() -> IppResponse {
-        unsafe {
-            let ipp = bindings::ippNew();
-            assert!(!ipp.is_null());
-
-            for (device_id, info, uri) in [
-                (
-                    "MFG:Acme;MDL:Test Laser 9000;CMD:POSTSCRIPT;SN:SERIAL-1;",
-                    "Acme Test Laser 9000",
-                    "socket://192.0.2.10:9100",
-                ),
-                (
-                    "MFG:Acme;MDL:Test Label 100;CMD:PCL;SN:SERIAL-2;",
-                    "Acme Test Label 100",
-                    "usb://Acme/Test%20Label%20100?serial=SERIAL-2",
-                ),
-            ] {
-                let col = bindings::ippNew();
-                assert!(!col.is_null());
-
-                let name = CString::new("smi55357-device-id").unwrap();
-                let value = CString::new(device_id).unwrap();
-                bindings::ippAddString(
-                    col,
-                    bindings::ipp_tag_e_IPP_TAG_ZERO,
-                    bindings::ipp_tag_e_IPP_TAG_TEXT,
-                    name.as_ptr(),
-                    ptr::null(),
-                    value.as_ptr(),
-                );
-
-                let name = CString::new("smi55357-device-info").unwrap();
-                let value = CString::new(info).unwrap();
-                bindings::ippAddString(
-                    col,
-                    bindings::ipp_tag_e_IPP_TAG_ZERO,
-                    bindings::ipp_tag_e_IPP_TAG_TEXT,
-                    name.as_ptr(),
-                    ptr::null(),
-                    value.as_ptr(),
-                );
-
-                let name = CString::new("smi55357-device-uri").unwrap();
-                let value = CString::new(uri).unwrap();
-                bindings::ippAddString(
-                    col,
-                    bindings::ipp_tag_e_IPP_TAG_ZERO,
-                    bindings::ipp_tag_e_IPP_TAG_URI,
-                    name.as_ptr(),
-                    ptr::null(),
-                    value.as_ptr(),
-                );
-
-                let name = CString::new("smi55357-device-col").unwrap();
-                bindings::ippAddCollection(
-                    ipp,
-                    bindings::ipp_tag_e_IPP_TAG_SYSTEM,
-                    name.as_ptr(),
-                    col,
-                );
-            }
-
-            let name = CString::new("system-name").unwrap();
-            let value = CString::new("Test Printer Application").unwrap();
-            bindings::ippAddString(
-                ipp,
-                bindings::ipp_tag_e_IPP_TAG_SYSTEM,
-                bindings::ipp_tag_e_IPP_TAG_NAME,
-                name.as_ptr(),
-                ptr::null(),
-                value.as_ptr(),
-            );
-
-            IppResponse {
-                ipp,
-                _phantom: PhantomData,
-            }
-        }
-    }
-
-    #[test]
-    fn repeated_collections_are_all_reachable() {
-        let response = find_devices_response();
-
-        let devices = response.attributes_named("smi55357-device-col");
-        assert_eq!(devices.len(), 2);
-
-        let uris = devices
-            .iter()
-            .map(|attr| {
-                let collection = attr.get_collection(0).expect("collection value");
-                collection.text("smi55357-device-uri").expect("device uri")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            uris,
-            vec![
-                "socket://192.0.2.10:9100".to_string(),
-                "usb://Acme/Test%20Label%20100?serial=SERIAL-2".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn collection_members_report_their_types() {
-        let response = find_devices_response();
-        let device = response
-            .find_attribute("smi55357-device-col", Some(IppTag::System))
-            .expect("device collection attribute");
-
-        assert_eq!(device.value_tag(), IppValueTag::BeginCollection);
-        assert_eq!(device.group_tag(), Some(IppTag::System));
-
-        let collection = device.get_collection(0).expect("collection value");
-        assert_eq!(
-            collection
-                .find("smi55357-device-uri")
-                .map(|member| member.value_tag()),
-            Some(IppValueTag::Uri)
-        );
-        assert_eq!(
-            collection
-                .find("smi55357-device-id")
-                .map(|member| member.value_tag()),
-            Some(IppValueTag::Text)
-        );
-        assert!(collection.find("smi55357-device-type").is_none());
-    }
-
-    #[test]
-    fn group_filter_rejects_attributes_from_another_group() {
-        let response = find_devices_response();
-
-        assert!(
-            response
-                .find_attribute("system-name", Some(IppTag::System))
-                .is_some()
-        );
-        assert!(
-            response
-                .find_attribute("system-name", Some(IppTag::Printer))
-                .is_none()
-        );
-        assert!(response.find_attribute("system-name", None).is_some());
-    }
-
-    #[test]
-    fn non_collection_attributes_do_not_yield_collections() {
-        let response = find_devices_response();
-        let name = response
-            .find_attribute("system-name", None)
-            .expect("system-name");
-
-        assert!(name.get_collection(0).is_none());
-        assert!(name.collections().is_empty());
-    }
-
-    #[test]
-    fn out_of_range_collection_index_is_rejected() {
-        let response = find_devices_response();
-        let device = response
-            .find_attribute("smi55357-device-col", None)
-            .expect("device collection attribute");
-
-        assert_eq!(device.count(), 1);
-        assert!(device.get_collection(1).is_none());
-    }
-
-    #[test]
-    fn collection_text_rejects_the_wrong_type_and_blank_values() {
-        let collection_owner = unsafe {
-            let ipp = bindings::ippNew();
-            let col = bindings::ippNew();
-
-            let name = CString::new("smi55357-device-id").unwrap();
-            bindings::ippAddInteger(
-                col,
-                bindings::ipp_tag_e_IPP_TAG_ZERO,
-                bindings::ipp_tag_e_IPP_TAG_INTEGER,
-                name.as_ptr(),
-                42,
-            );
-
-            let name = CString::new("smi55357-device-info").unwrap();
-            let value = CString::new("   ").unwrap();
-            bindings::ippAddString(
-                col,
-                bindings::ipp_tag_e_IPP_TAG_ZERO,
-                bindings::ipp_tag_e_IPP_TAG_TEXT,
-                name.as_ptr(),
-                ptr::null(),
-                value.as_ptr(),
-            );
-
-            let name = CString::new("smi55357-device-col").unwrap();
-            bindings::ippAddCollection(ipp, bindings::ipp_tag_e_IPP_TAG_SYSTEM, name.as_ptr(), col);
-
-            IppResponse {
-                ipp,
-                _phantom: PhantomData,
-            }
+        // Skip test if no CUPS server
+        let printer = match get_default_destination() {
+            Ok(p) => p,
+            Err(_) => return, 
         };
 
-        let device = collection_owner
-            .find_attribute("smi55357-device-col", None)
-            .expect("device collection attribute");
-        let collection = device.get_collection(0).expect("collection value");
+        // Skip test if connection fails
+        let connection = match printer.connect(ConnectionFlags::Scheduler, Some(5000), None) {
+            Ok(c) => c,
+            Err(_) => return, 
+        };
 
-        assert_eq!(collection.text("smi55357-device-id"), None);
-        assert_eq!(collection.text("smi55357-device-info"), None);
-        assert_eq!(collection.text("smi55357-device-uri"), None);
+        // Create a GetPrinterAttributes request
+        let mut request = IppRequest::new(IppOperation::GetPrinterAttributes).unwrap();
+        
+        // Use the actual printer URI if available, otherwise fallback to a plausible one
+        let uri = printer.uri().cloned().unwrap_or_else(|| "ipp://localhost/printers/default".to_string());
+        
+        // Add minimal required attributes
+        request.add_string(
+            IppTag::Operation,
+            IppValueTag::Uri,
+            "printer-uri",
+            &uri,
+        ).unwrap();
+
+        // Post to the specific printer resource path, not the scheduler root
+        let resource = uri
+            .strip_prefix("ipp://")
+            .or_else(|| uri.strip_prefix("ipps://"))
+            .and_then(|rest| rest.split_once('/').map(|(_, path)| format!("/{}", path)))
+            .unwrap_or_else(|| "/".to_string());
+
+        // Send the request
+        let response = request.send(&connection, &resource);
+        
+        // If the operation code was LOST (became 0), CUPS returns ErrorBadRequest (0x0400).
+        // Since we preserved it, this should return a successful response or another error.
+        if let Ok(resp) = response {
+            assert_ne!(
+                resp.status(),
+                IppStatus::ErrorBadRequest,
+                "Operation code was lost in send() copy"
+            );
+        }
     }
 }

@@ -13,7 +13,7 @@ use crate::error_helpers::cups_error_to_our_error;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
-use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::os::raw::{c_int, c_uint, c_void};
 use std::ptr;
 use std::usize;
 
@@ -610,68 +610,27 @@ impl Destinations {
         }
     }
 
-    /// Read the destinations saved in the user's `lpoptions` file
+    /// Reads one destination's saved options, straight from libcups.
     ///
-    /// This is the only safe base for [`Destinations::save_to_lpoptions`], which rewrites
-    /// the file from the list it is given. [`Destinations::get_all`] answers with the
-    /// destinations that exist *right now*, so saving from it drops every saved entry
-    /// naming a printer that is switched off, and replaces the user's own option values
-    /// with whichever queue currently answers.
-    ///
-    /// A file that is not there yet is not an error: it reads as no saved destinations,
-    /// which is what it means.
-    pub fn load_lpoptions() -> Result<Self> {
-        let path = user_lpoptions_path()?;
-        let mut loaded = Destinations::new();
+    /// This is `cupsGetNamedDest`, which already merges the system and user `lpoptions`
+    /// files for the one destination asked for — there is no file to open or parse here.
+    pub fn named_destination(name: &str, instance: Option<&str>) -> Option<Destination> {
+        let name_c = CString::new(name).ok()?;
+        let instance_c = instance.and_then(|instance| CString::new(instance).ok());
+        let instance_ptr = instance_c
+            .as_ref()
+            .map_or(ptr::null(), |instance| instance.as_ptr());
 
-        let path_c = CString::new(path.as_str())
-            .map_err(|_| Error::ConfigurationError(format!("invalid lpoptions path: {path}")))?;
-        let mode = CString::new("r").map_err(|_| Error::NullPointer)?;
-        let file = unsafe { bindings::cupsFileOpen(path_c.as_ptr(), mode.as_ptr()) };
+        let dest =
+            unsafe { bindings::cupsGetNamedDest(ptr::null_mut(), name_c.as_ptr(), instance_ptr) };
 
-        if file.is_null() {
-            return Ok(loaded);
+        if dest.is_null() {
+            return None;
         }
 
-        // `cupsFileGetConf` splits each line into its keyword and the rest, and skips
-        // comments and blank lines, so the file is read exactly as libcups reads it.
-        let mut line = [0 as c_char; 2048];
-        let mut linenum: c_int = 0;
-
-        loop {
-            let mut value: *mut c_char = ptr::null_mut();
-            let keyword = unsafe {
-                bindings::cupsFileGetConf(
-                    file,
-                    line.as_mut_ptr(),
-                    line.len(),
-                    &mut value,
-                    &mut linenum,
-                )
-            };
-
-            if keyword.is_null() {
-                break;
-            }
-            if value.is_null() {
-                continue;
-            }
-
-            let keyword = unsafe { CStr::from_ptr(keyword) }.to_string_lossy();
-            let is_default = keyword.eq_ignore_ascii_case("default");
-            if !is_default && !keyword.eq_ignore_ascii_case("dest") {
-                continue;
-            }
-
-            let rest = unsafe { CStr::from_ptr(value) }
-                .to_string_lossy()
-                .into_owned();
-            loaded.load_saved_destination(&rest, is_default)?;
-        }
-
-        unsafe { bindings::cupsFileClose(file) };
-
-        Ok(loaded)
+        let destination = unsafe { Destination::from_raw(dest) }.ok();
+        unsafe { bindings::cupsFreeDests(1, dest) };
+        destination
     }
 
     /// Names the destination CUPS would print to when no destination is given.
@@ -727,46 +686,6 @@ impl Destinations {
     }
 
     /// Adds one `Dest`/`Default` line's destination, options and all.
-    fn load_saved_destination(&mut self, rest: &str, is_default: bool) -> Result<()> {
-        // `name[/instance]` up to the first space, then the options. libcups splits the
-        // name on `/` the same way, so an instance survives the round trip.
-        let (target, options) = match rest.find(char::is_whitespace) {
-            Some(split) => (&rest[..split], rest[split..].trim_start()),
-            None => (rest, ""),
-        };
-        let (name, instance) = match target.split_once('/') {
-            Some((name, instance)) => (name, Some(instance)),
-            None => (target, None),
-        };
-
-        if name.is_empty() {
-            return Ok(());
-        }
-
-        self.add_destination(name, instance)?;
-
-        if !options.is_empty() {
-            let options_c = CString::new(options)
-                .map_err(|_| Error::ConfigurationError("invalid saved options".to_string()))?;
-
-            // Parsed by libcups so the quoting rules its writer uses are honoured.
-            self.with_destination(name, instance, |dest| unsafe {
-                dest.num_options = bindings::cupsParseOptions(
-                    options_c.as_ptr(),
-                    ptr::null_mut(),
-                    dest.num_options,
-                    &mut dest.options,
-                );
-            });
-        }
-
-        if is_default {
-            self.set_default_destination(name, instance)?;
-        }
-
-        Ok(())
-    }
-
     /// Set one saved option on a destination
     ///
     /// The change is made in the list held here; [`Destinations::save_to_lpoptions`]
@@ -799,23 +718,6 @@ impl Destinations {
         } else {
             Err(Error::DestinationNotFound(name.to_string()))
         }
-    }
-
-    /// Remove one saved option from a destination
-    pub fn remove_destination_option(
-        &mut self,
-        name: &str,
-        instance: Option<&str>,
-        option: &str,
-    ) -> Result<()> {
-        let option_c = CString::new(option)?;
-
-        self.with_destination(name, instance, |dest| unsafe {
-            dest.num_options =
-                bindings::cupsRemoveOption(option_c.as_ptr(), dest.num_options, &mut dest.options);
-        });
-
-        Ok(())
     }
 
     /// Clear the default destination, leaving none marked
@@ -1080,147 +982,6 @@ impl DestinationInfo {
     }
 }
 
-/// Returns the path of the user's `lpoptions` file, as this libcups reads and writes it.
-///
-/// libcups keeps this path to itself, so it is worked out here the same way
-/// `_cupsGlobals` does (`cups/globals.c`). The two have to agree: `cupsSetDests` derives
-/// it again for itself when writing, so a different answer here would read one file and
-/// write another, and every saved destination the reader missed would be dropped.
-pub fn user_lpoptions_path() -> Result<String> {
-    Ok(format!("{}/lpoptions", user_config_dir()?))
-}
-
-/// Returns the path libcups 2 reads the user's saved destinations from.
-///
-/// Always `~/.cups/lpoptions`, because libcups 2 knows nothing of `XDG_CONFIG_HOME` — where
-/// this libcups honours it and so may use `~/.config/cups/lpoptions` instead. When the two
-/// differ, a default saved through one library is invisible to the other, and on a desktop
-/// most print dialogs are still the other one. A caller that wants a preference to be honoured
-/// everywhere has to keep both in step.
-///
-/// `None` when there is no home directory to speak of.
-pub fn legacy_lpoptions_path() -> Option<String> {
-    home_dir().map(|home| format!("{home}/.cups/lpoptions"))
-}
-
-fn user_config_dir() -> Result<String> {
-    // Running set-user or set-group, libcups refuses to let the environment name the
-    // user directory, so it is not consulted here either.
-    let elevated = unsafe {
-        (libc::geteuid() != libc::getuid() && libc::getuid() != 0)
-            || libc::getegid() != libc::getgid()
-    };
-    let uid = unsafe { libc::getuid() };
-
-    if uid == 0 {
-        // As root libcups uses the system directory instead, whose default is fixed when
-        // libcups is built and is not published anywhere this crate can read. Naming the
-        // wrong file would quietly discard what is in the right one, so say so instead of
-        // guessing — and note the system file is a different thing from a user's own.
-        return env_dir("CUPS_SYSCONFIG")
-            .or_else(|| env_dir("CUPS_SERVERROOT"))
-            .ok_or_else(|| {
-                Error::ConfigurationError(
-                    "running as root, where the lpoptions directory is libcups's build-time \
-                     CUPS_SERVERROOT; set CUPS_SYSCONFIG to name it"
-                        .to_string(),
-                )
-            });
-    }
-
-    // `CUPS_USERCONFIG` is the only one of these libcups suppresses when elevated; the
-    // rest it reads whatever the privileges.
-    let user_override = if elevated {
-        None
-    } else {
-        env_dir("CUPS_USERCONFIG")
-    };
-    let snap_common = env_dir("SNAP_COMMON");
-    let xdg_config_home = env_dir("XDG_CONFIG_HOME");
-    let home = home_dir();
-    let legacy_exists = home
-        .as_deref()
-        .is_some_and(|home| std::path::Path::new(&format!("{home}/.cups")).exists());
-
-    Ok(config_dir_for(
-        user_override.as_deref(),
-        snap_common.as_deref(),
-        xdg_config_home.as_deref(),
-        home.as_deref(),
-        legacy_exists,
-        uid,
-    ))
-}
-
-/// Chooses the user directory from what the environment said, in libcups's own order.
-///
-/// Kept apart from reading the environment so the order can be tested, since getting it
-/// wrong means reading a different file than `cupsSetDests` writes.
-fn config_dir_for(
-    user_override: Option<&str>,
-    snap_common: Option<&str>,
-    xdg_config_home: Option<&str>,
-    home: Option<&str>,
-    legacy_exists: bool,
-    uid: u32,
-) -> String {
-    if let Some(dir) = user_override {
-        return dir.to_string();
-    }
-    if let Some(dir) = snap_common {
-        return format!("{dir}/cups");
-    }
-    if let Some(dir) = xdg_config_home {
-        return format!("{dir}/cups");
-    }
-
-    match home {
-        // `~/.cups` is used only where it already exists; a fresh account gets the XDG
-        // location instead.
-        Some(home) if legacy_exists => format!("{home}/.cups"),
-        Some(home) => format!("{home}/.config/cups"),
-        None => format!("/tmp/cups{uid}"),
-    }
-}
-
-fn env_dir(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
-}
-
-/// Returns the home directory, from the environment or else the account itself.
-///
-/// libcups falls back to the account when `HOME` is unset, so a process started without
-/// it still reads the file the user's own tools wrote.
-fn home_dir() -> Option<String> {
-    if let Some(home) = env_dir("HOME") {
-        return Some(home);
-    }
-
-    let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut buffer = vec![0 as c_char; 4096];
-    let mut found: *mut libc::passwd = ptr::null_mut();
-
-    let failed = unsafe {
-        libc::getpwuid_r(
-            libc::getuid(),
-            &mut passwd,
-            buffer.as_mut_ptr(),
-            buffer.len(),
-            &mut found,
-        )
-    };
-
-    if failed != 0 || found.is_null() || passwd.pw_dir.is_null() {
-        return None;
-    }
-
-    let home = unsafe { CStr::from_ptr(passwd.pw_dir) }
-        .to_string_lossy()
-        .into_owned();
-
-    (!home.is_empty()).then_some(home)
-}
-
 impl Drop for Destinations {
     fn drop(&mut self) {
         unsafe {
@@ -1383,73 +1144,11 @@ pub fn find_destinations(type_filter: u32, mask: u32) -> Result<Vec<Destination>
 mod tests {
     use super::*;
 
-    /// libcups reads these in one order and this crate has to read them in the same one,
-    /// because `cupsSetDests` derives the path again when it writes. Reading a different
-    /// file than the writer uses would silently discard every entry already saved.
+    /// A name with no matching destination at all is `None`, not an error — libcups
+    /// itself treats an unresolvable name this way.
     #[test]
-    fn the_user_directory_follows_libcups_own_order() {
-        // `CUPS_USERCONFIG` names the directory outright and outranks the rest.
-        assert_eq!(
-            config_dir_for(
-                Some("/named"),
-                Some("/snap"),
-                Some("/xdg"),
-                Some("/home/abd"),
-                true,
-                1000
-            ),
-            "/named"
-        );
-
-        // A snap sees its own writable area before anything else.
-        assert_eq!(
-            config_dir_for(
-                None,
-                Some("/snap"),
-                Some("/xdg"),
-                Some("/home/abd"),
-                true,
-                1000
-            ),
-            "/snap/cups"
-        );
-
-        assert_eq!(
-            config_dir_for(None, None, Some("/xdg"), Some("/home/abd"), true, 1000),
-            "/xdg/cups"
-        );
-
-        // `~/.cups` only where it already exists, which is what keeps an account that has
-        // one reading the same file the libcups 2 tools do.
-        assert_eq!(
-            config_dir_for(None, None, None, Some("/home/abd"), true, 1000),
-            "/home/abd/.cups"
-        );
-        assert_eq!(
-            config_dir_for(None, None, None, Some("/home/abd"), false, 1000),
-            "/home/abd/.config/cups"
-        );
-
-        // No home to work from at all.
-        assert_eq!(
-            config_dir_for(None, None, None, None, false, 1000),
-            "/tmp/cups1000"
-        );
-    }
-
-    /// The path is only ever this file, whichever directory was chosen.
-    #[test]
-    fn the_saved_destinations_live_in_lpoptions() {
-        let path = user_lpoptions_path().expect("a non-root test process has a user directory");
-
-        assert!(path.ends_with("/lpoptions"), "unexpected path: {path}");
-    }
-
-    /// A file that was never written reads as no saved destinations, which is what it
-    /// means — not an error, and not a reason to fall back to asking the server.
-    #[test]
-    fn reading_saved_destinations_succeeds_whether_or_not_the_file_exists() {
-        assert!(Destinations::load_lpoptions().is_ok());
+    fn named_destination_of_a_nonexistent_printer_is_none() {
+        assert!(Destinations::named_destination("no-such-printer-at-all", None).is_none());
     }
 
     #[test]
