@@ -17,7 +17,6 @@ use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::{c_int, c_uint, c_void};
 use std::ptr;
-use std::usize;
 
 pub type DestCallback<T> = dyn FnMut(u32, &Destination, &mut T) -> bool;
 
