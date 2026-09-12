@@ -1,7 +1,17 @@
+// DNS-SD is built on cups/dnssd.h, a CUPS 3-only addition; nothing to run under CUPS 2.
+#[cfg(not(cups3))]
+fn main() {
+    eprintln!("discover_system_services requires CUPS 3; skipping under CUPS 2.");
+}
+
+#[cfg(cups3)]
 use cups_rs::Dnssd;
+#[cfg(cups3)]
 use std::sync::mpsc;
+#[cfg(cups3)]
 use std::time::{Duration, Instant};
 
+#[cfg(cups3)]
 fn main() -> cups_rs::Result<()> {
     let (error_sender, error_receiver) = mpsc::channel();
     let (browse_sender, browse_receiver) = mpsc::channel();

@@ -48,9 +48,10 @@ impl DestinationInfo {
         }
 
         #[cfg(cups2)]
-        cups_bool(unsafe {
+        unsafe {
             bindings::cupsCheckDestSupported(http, dest, self.dinfo, option_c.as_ptr(), ptr::null())
-        })
+                != 0
+        }
     }
 
     /// Check if a specific option and value is supported
@@ -83,15 +84,15 @@ impl DestinationInfo {
         }
 
         #[cfg(cups2)]
-        cups_bool(unsafe {
+        unsafe {
             bindings::cupsCheckDestSupported(
                 http,
                 dest,
                 self.dinfo,
                 option_c.as_ptr(),
                 value_c.as_ptr(),
-            )
-        })
+            ) != 0
+        }
     }
 
     /// Get media by name
