@@ -31,6 +31,7 @@
 //! ```
 
 use crate::bindings;
+use crate::compat::{count_to_usize, usize_to_count};
 use crate::connection::HttpConnection;
 use crate::error::{Error, Result};
 use std::collections::HashMap;
@@ -402,8 +403,19 @@ impl IppRequest {
     pub fn add_boolean(&mut self, group: IppTag, name: &str, value: bool) -> Result<()> {
         let name_c = CString::new(name)?;
 
+        #[cfg(cups3)]
         let attr =
             unsafe { bindings::ippAddBoolean(self.ipp, group.into(), name_c.as_ptr(), value) };
+
+        #[cfg(cups2)]
+        let attr = unsafe {
+            bindings::ippAddBoolean(
+                self.ipp,
+                group.into(),
+                name_c.as_ptr(),
+                if value { 1 } else { 0 },
+            )
+        };
 
         if attr.is_null() {
             Err(Error::UnsupportedFeature(format!(
@@ -438,7 +450,7 @@ impl IppRequest {
                 group.into(),
                 value_tag.into(),
                 name_c.as_ptr(),
-                values.len(),
+                usize_to_count(values.len()),
                 ptr::null(),
                 values_ptrs.as_ptr(),
             )
@@ -473,7 +485,11 @@ impl IppRequest {
             bindings::ippSetRequestId(request_copy, bindings::ippGetRequestId(self.ipp));
 
             // Copy all attributes
+            #[cfg(cups3)]
             bindings::ippCopyAttributes(request_copy, self.ipp, false, None, ptr::null_mut());
+
+            #[cfg(cups2)]
+            bindings::ippCopyAttributes(request_copy, self.ipp, 0, None, ptr::null_mut());
         }
 
         let response = unsafe {
@@ -506,7 +522,12 @@ impl IppRequest {
         unsafe {
             bindings::ippSetOperation(request_copy, bindings::ippGetOperation(self.ipp));
             bindings::ippSetRequestId(request_copy, bindings::ippGetRequestId(self.ipp));
+
+            #[cfg(cups3)]
             bindings::ippCopyAttributes(request_copy, self.ipp, false, None, ptr::null_mut());
+
+            #[cfg(cups2)]
+            bindings::ippCopyAttributes(request_copy, self.ipp, 0, None, ptr::null_mut());
         }
 
         let response =
@@ -630,11 +651,25 @@ impl IppResponse {
     /// Get all attributes in the response
     pub fn attributes(&self) -> Vec<IppAttribute> {
         let mut attributes = Vec::new();
+
+        #[cfg(cups3)]
         let mut attr = unsafe { bindings::ippGetFirstAttribute(self.ipp) };
+
+        #[cfg(cups2)]
+        let mut attr = unsafe { bindings::ippFirstAttribute(self.ipp) };
 
         while !attr.is_null() {
             attributes.push(IppAttribute { attr });
-            attr = unsafe { bindings::ippGetNextAttribute(self.ipp) };
+
+            #[cfg(cups3)]
+            {
+                attr = unsafe { bindings::ippGetNextAttribute(self.ipp) };
+            }
+
+            #[cfg(cups2)]
+            {
+                attr = unsafe { bindings::ippNextAttribute(self.ipp) };
+            }
         }
 
         attributes
@@ -676,7 +711,7 @@ impl IppAttribute {
 
     /// Get the number of values
     pub fn count(&self) -> usize {
-        unsafe { bindings::ippGetCount(self.attr) as usize }
+        count_to_usize(unsafe { bindings::ippGetCount(self.attr) })
     }
 
     /// Get the value type
@@ -692,7 +727,8 @@ impl IppAttribute {
     /// Get a string value
     pub fn get_string(&self, index: usize) -> Option<String> {
         unsafe {
-            let value_ptr = bindings::ippGetString(self.attr, index, ptr::null_mut());
+            let value_ptr =
+                bindings::ippGetString(self.attr, usize_to_count(index), ptr::null_mut());
             if value_ptr.is_null() {
                 None
             } else {
@@ -704,25 +740,44 @@ impl IppAttribute {
     /// Get an octetString value
     pub fn get_octet_string(&self, index: usize) -> Option<Vec<u8>> {
         unsafe {
+            #[cfg(cups3)]
             let mut length: usize = 0;
+
+            #[cfg(cups2)]
+            let mut length: i32 = 0;
+
+            #[cfg(cups3)]
             let data = bindings::ippGetOctetString(self.attr, index, &mut length);
+
+            #[cfg(cups2)]
+            let data = bindings::ippGetOctetString(self.attr, usize_to_count(index), &mut length);
 
             if data.is_null() {
                 None
             } else {
-                Some(std::slice::from_raw_parts(data as *const u8, length).to_vec())
+                Some(std::slice::from_raw_parts(data as *const u8, length as usize).to_vec())
             }
         }
     }
 
     /// Get an integer value
     pub fn get_integer(&self, index: usize) -> i32 {
-        unsafe { bindings::ippGetInteger(self.attr, index) }
+        unsafe { bindings::ippGetInteger(self.attr, usize_to_count(index)) }
     }
 
     /// Get a boolean value
     pub fn get_boolean(&self, index: usize) -> bool {
-        unsafe { bindings::ippGetBoolean(self.attr, index) }
+        let value = unsafe { bindings::ippGetBoolean(self.attr, usize_to_count(index)) };
+
+        #[cfg(cups3)]
+        {
+            value
+        }
+
+        #[cfg(cups2)]
+        {
+            value != 0
+        }
     }
 
     /// Get collection values as name-value maps
@@ -737,13 +792,19 @@ impl IppAttribute {
     }
 
     fn collection_at(&self, index: usize) -> Option<HashMap<String, String>> {
-        let collection = unsafe { bindings::ippGetCollection(self.attr, index) };
+        let collection = unsafe { bindings::ippGetCollection(self.attr, usize_to_count(index)) };
         if collection.is_null() {
             return None;
         }
 
         let mut members = HashMap::new();
+
+        #[cfg(cups3)]
         let mut attr = unsafe { bindings::ippGetFirstAttribute(collection) };
+
+        #[cfg(cups2)]
+        let mut attr = unsafe { bindings::ippFirstAttribute(collection) };
+
         while !attr.is_null() {
             let member = IppAttribute { attr };
             if let Some(name) = member.name()
@@ -755,7 +816,16 @@ impl IppAttribute {
                     members.insert(name, trimmed.to_string());
                 }
             }
-            attr = unsafe { bindings::ippGetNextAttribute(collection) };
+
+            #[cfg(cups3)]
+            {
+                attr = unsafe { bindings::ippGetNextAttribute(collection) };
+            }
+
+            #[cfg(cups2)]
+            {
+                attr = unsafe { bindings::ippNextAttribute(collection) };
+            }
         }
 
         Some(members)
@@ -808,33 +878,33 @@ mod tests {
 
     #[test]
     fn test_ipp_request_send_preserves_operation() {
-        use crate::{get_default_destination, ConnectionFlags};
+        use crate::{ConnectionFlags, get_default_destination};
 
         // Skip test if no CUPS server
         let printer = match get_default_destination() {
             Ok(p) => p,
-            Err(_) => return, 
+            Err(_) => return,
         };
 
         // Skip test if connection fails
         let connection = match printer.connect(ConnectionFlags::Scheduler, Some(5000), None) {
             Ok(c) => c,
-            Err(_) => return, 
+            Err(_) => return,
         };
 
         // Create a GetPrinterAttributes request
         let mut request = IppRequest::new(IppOperation::GetPrinterAttributes).unwrap();
-        
+
         // Use the actual printer URI if available, otherwise fallback to a plausible one
-        let uri = printer.uri().cloned().unwrap_or_else(|| "ipp://localhost/printers/default".to_string());
-        
+        let uri = printer
+            .uri()
+            .cloned()
+            .unwrap_or_else(|| "ipp://localhost/printers/default".to_string());
+
         // Add minimal required attributes
-        request.add_string(
-            IppTag::Operation,
-            IppValueTag::Uri,
-            "printer-uri",
-            &uri,
-        ).unwrap();
+        request
+            .add_string(IppTag::Operation, IppValueTag::Uri, "printer-uri", &uri)
+            .unwrap();
 
         // Post to the specific printer resource path, not the scheduler root
         let resource = uri
@@ -845,7 +915,7 @@ mod tests {
 
         // Send the request
         let response = request.send(&connection, &resource);
-        
+
         // If the operation code was LOST (became 0), CUPS returns ErrorBadRequest (0x0400).
         // Since we preserved it, this should return a successful response or another error.
         if let Ok(resp) = response {

@@ -109,6 +109,8 @@ pub mod auth;
 #[allow(missing_docs)]
 pub mod bindings;
 
+mod compat;
+
 /// CUPS server configuration management
 ///
 /// Configure CUPS server settings including:
@@ -142,6 +144,10 @@ pub mod constants;
 pub mod destination;
 
 /// DNS Service Discovery browsing and service resolution.
+///
+/// Built on `cups/dnssd.h`, which CUPS 3 added and CUPS 2 has no equivalent for —
+/// unavailable when built against CUPS 2.
+#[cfg(cups3)]
 pub mod dnssd;
 
 mod error;
@@ -184,6 +190,7 @@ pub use destination::{
     enum_destinations, find_destinations, get_all_destinations, get_default_destination,
     get_destination, remove_dest,
 };
+#[cfg(cups3)]
 pub use dnssd::{
     Dnssd, DnssdBrowseEvent, DnssdBrowser, DnssdResolveEvent, DnssdResolvedService, DnssdResolver,
     DnssdServiceResolver,

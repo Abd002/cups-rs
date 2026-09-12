@@ -1,3 +1,4 @@
+use crate::compat::usize_to_count;
 use crate::destination::{DestCallback, Destination};
 use crate::error::{Error, Result};
 use crate::{bindings, config::EncryptionMode};
@@ -89,6 +90,8 @@ impl HttpConnection {
         timeout_ms: Option<i32>,
     ) -> Result<Self> {
         let host = CString::new(host)?;
+
+        #[cfg(cups3)]
         let http = unsafe {
             bindings::httpConnect(
                 host.as_ptr(),
@@ -97,6 +100,20 @@ impl HttpConnection {
                 0,
                 encryption.into(),
                 true,
+                timeout_ms.unwrap_or(-1),
+                ptr::null_mut(),
+            )
+        };
+
+        #[cfg(cups2)]
+        let http = unsafe {
+            bindings::httpConnect2(
+                host.as_ptr(),
+                port.into(),
+                ptr::null_mut(),
+                0,
+                encryption.into(),
+                1,
                 timeout_ms.unwrap_or(-1),
                 ptr::null_mut(),
             )
@@ -142,8 +159,9 @@ impl HttpConnection {
     /// Returns the hostname selected for this connection.
     pub fn hostname(&self) -> Option<String> {
         let mut buffer = [0i8; 1024];
-        let hostname =
-            unsafe { bindings::httpGetHostname(self.http, buffer.as_mut_ptr(), buffer.len()) };
+        let hostname = unsafe {
+            bindings::httpGetHostname(self.http, buffer.as_mut_ptr(), usize_to_count(buffer.len()))
+        };
         if hostname.is_null() {
             return None;
         }
@@ -165,8 +183,16 @@ impl HttpConnection {
         }
 
         let mut buffer = [0i8; 128];
+
+        #[cfg(cups3)]
         let value =
             unsafe { bindings::httpAddrGetString(address, buffer.as_mut_ptr(), buffer.len()) };
+
+        #[cfg(cups2)]
+        let value = unsafe {
+            bindings::httpAddrString(address, buffer.as_mut_ptr(), usize_to_count(buffer.len()))
+        };
+
         if value.is_null() {
             return None;
         }
@@ -181,7 +207,13 @@ impl HttpConnection {
             return None;
         }
 
-        u16::try_from(unsafe { bindings::httpAddrGetPort(address) }).ok()
+        #[cfg(cups3)]
+        let port = unsafe { bindings::httpAddrGetPort(address) };
+
+        #[cfg(cups2)]
+        let port = unsafe { bindings::httpAddrPort(address) };
+
+        u16::try_from(port).ok()
     }
 
     /// Close the HTTP connection
@@ -367,6 +399,7 @@ struct ConnectContext<'a, T> {
 }
 
 // C-compatible callback function for connection monitoring
+#[cfg(cups3)]
 unsafe extern "C" fn connect_dest_callback<T>(
     user_data: *mut c_void,
     flags: u32,
@@ -390,6 +423,29 @@ unsafe extern "C" fn connect_dest_callback<T>(
                 // Error parsing destination, but continue anyway
                 true
             }
+        }
+    }
+}
+
+// C-compatible callback function for connection monitoring
+#[cfg(cups2)]
+unsafe extern "C" fn connect_dest_callback<T>(
+    user_data: *mut c_void,
+    flags: u32,
+    dest_ptr: *mut bindings::cups_dest_s,
+) -> c_int {
+    let context = unsafe { &mut *(user_data as *mut ConnectContext<T>) };
+
+    unsafe {
+        match Destination::from_raw(dest_ptr) {
+            Ok(dest) => {
+                if (context.callback)(flags, &dest, context.user_data) {
+                    1
+                } else {
+                    0
+                }
+            }
+            Err(_) => 1,
         }
     }
 }

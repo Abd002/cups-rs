@@ -3,8 +3,37 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rustc-check-cfg=cfg(cups2)");
+    println!("cargo:rustc-check-cfg=cfg(cups3)");
 
-    let library = pkg_config::probe_library("cups3").expect("Failed to find cups3 with pkg-config");
+    let force_cups2 = env::var_os("CARGO_FEATURE_FORCE_CUPS2").is_some();
+    let force_cups3 = env::var_os("CARGO_FEATURE_FORCE_CUPS3").is_some();
+
+    if force_cups2 && force_cups3 {
+        panic!("features force-cups2 and force-cups3 cannot be enabled together");
+    }
+
+    let (library, cups_cfg) = if force_cups2 {
+        (
+            pkg_config::probe_library("cups").expect("Failed to find cups with pkg-config"),
+            "cups2",
+        )
+    } else if force_cups3 {
+        (
+            pkg_config::probe_library("cups3").expect("Failed to find cups3 with pkg-config"),
+            "cups3",
+        )
+    } else if let Ok(library) = pkg_config::probe_library("cups3") {
+        (library, "cups3")
+    } else {
+        (
+            pkg_config::probe_library("cups")
+                .expect("Failed to find cups3 or cups with pkg-config"),
+            "cups2",
+        )
+    };
+
+    println!("cargo:rustc-cfg={cups_cfg}");
 
     let mut builder = bindgen::Builder::default()
         .header("wrapper.h")
@@ -21,6 +50,11 @@ fn main() {
         .allowlist_function("ipp.*")
         .allowlist_type("ipp_.*")
         .allowlist_var("IPP_.*");
+
+    if cups_cfg == "cups3" {
+        // Lets wrapper.h include cups/dnssd.h, which CUPS 2 doesn't have.
+        builder = builder.clang_arg("-DCUPS_RS_CUPS3");
+    }
 
     for include_path in library.include_paths {
         builder = builder.clang_arg(format!("-I{}", include_path.display()));
