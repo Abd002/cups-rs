@@ -3,8 +3,8 @@ use std::ffi::{CStr, CString, c_void};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ptr;
 use std::slice;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DnssdBrowseEvent {
@@ -50,26 +50,9 @@ pub struct Dnssd {
 struct DnssdInner {
     raw: *mut bindings::_cups_dnssd_s,
     /// Registered with libcups as the error callback's data, so it lives exactly as
-    /// long as the context. Taken when the context is recycled.
-    error_state: Option<Box<ErrorState>>,
-}
-
-/// A context nobody is using, kept for the next caller that needs one.
-struct IdleContext {
-    raw: *mut bindings::_cups_dnssd_s,
+    /// long as the context.
     error_state: Box<ErrorState>,
 }
-
-// A context sits here only while no owner holds it, and leaves to exactly one
-// owner, so moving it between threads hands over sole access rather than sharing.
-unsafe impl Send for IdleContext {}
-
-/// Contexts that have been finished with.
-///
-/// A context is never destroyed while the process runs — see [`DnssdInner::drop`]
-/// — so one is reused rather than created again. Without this, a service that came
-/// and went would cost a context every time.
-static IDLE_CONTEXTS: Mutex<Vec<IdleContext>> = Mutex::new(Vec::new());
 
 struct ErrorState(Sender<String>);
 struct BrowseState(Sender<DnssdBrowseEvent>);
@@ -96,44 +79,21 @@ impl Dnssd {
             ));
         }
         Ok(Self {
-            inner: Arc::new(DnssdInner {
-                raw,
-                error_state: Some(error_state),
-            }),
+            inner: Arc::new(DnssdInner { raw, error_state }),
         })
     }
 
-    /// Returns a context of its own for work this process starts itself.
+    /// Returns a context of its own, for work this process starts itself.
     ///
-    /// libcups decides whether to take its internal lock from a context-wide "am I
-    /// in a callback" flag that a browse or query callback sets for every thread, so
-    /// starting a resolver on a context that is already dispatching callbacks can
-    /// land inside libcups with no lock held at all. That is a data race on the
-    /// Avahi client, and it segfaults rather than failing. Each piece of deferred
-    /// work therefore gets a context nothing else is using.
-    ///
-    /// A recycled context reports libcups errors to the channel of whichever
-    /// context first created it, which is the same channel in a process with one
-    /// [`Dnssd::new`] caller.
+    /// Sharing a context between callbacks dispatching at the same time can leave
+    /// libcups thinking no lock is needed and race the Avahi client, so each piece
+    /// of deferred work gets a context nothing else is using.
     fn deferred(&self) -> Result<Dnssd> {
-        if let Some(idle) = idle_contexts().pop() {
-            return Ok(Self {
-                inner: Arc::new(DnssdInner {
-                    raw: idle.raw,
-                    error_state: Some(idle.error_state),
-                }),
-            });
-        }
-
         Dnssd::new(self.error_sender())
     }
 
     fn error_sender(&self) -> Sender<String> {
-        self.inner
-            .error_state
-            .as_ref()
-            .map(|state| state.0.clone())
-            .expect("a context in use has its error state")
+        self.inner.error_state.0.clone()
     }
 
     pub fn browse(
@@ -211,9 +171,8 @@ impl Dnssd {
     /// consumes browse events. A result is emitted once at least one address
     /// has been resolved and again whenever the address set changes.
     pub fn resolve_service(&self, service: &DnssdBrowseEvent) -> Result<DnssdServiceResolver> {
-        // Two contexts, because a resolver and the address queries that follow it
-        // dispatch callbacks independently: sharing one would let a query callback
-        // decide, for this thread, that no lock is needed.
+        // Two contexts: the resolver and the address queries dispatch independently,
+        // and sharing one risks the race `deferred` guards against.
         let resolve_context = self.deferred()?;
         let query_context = self.deferred()?;
         let (resolve_sender, resolve_receiver) = mpsc::channel();
@@ -235,10 +194,8 @@ impl Dnssd {
 
     /// Starts the A and AAAA queries for a host.
     ///
-    /// One family failing says nothing about the other, and a host answering over IPv4 alone is
-    /// ordinary. Giving up the query that started because the other did not left the service with no
-    /// addresses at all, and a service whose addresses never arrive is never reported. So whichever
-    /// started is kept, and this fails only when neither did.
+    /// An IPv4-only host is ordinary, so only failing both is an error — whichever query
+    /// started is kept even if the other didn't.
     fn query_addresses(
         &self,
         hostname: &str,
@@ -289,34 +246,10 @@ impl Dnssd {
     }
 }
 
-/// A DNS-SD context is deliberately never destroyed.
-///
-/// `cupsDNSSDDelete` calls `avahi_domain_browser_free(dnssd->dbrowser)`
-/// unconditionally, and `cupsDNSSDNew` stores the result of
-/// `avahi_domain_browser_new` without checking it — which is NULL whenever the
-/// Avahi client was not connected at that moment. libavahi asserts on NULL, so
-/// deleting such a context aborts the whole process. Nothing outside libcups can
-/// tell the two apart (libcups 3.0.1, `cups/dnssd.c`).
-///
-/// Aborting a settings daemon is far worse than holding an Avahi client open, so
-/// the context goes to [`IDLE_CONTEXTS`] to be used again instead. Reuse is what
-/// keeps that affordable: the number of contexts settles at the most that were ever
-/// needed at once, however many services come and go.
 impl Drop for DnssdInner {
     fn drop(&mut self) {
-        if let Some(error_state) = self.error_state.take() {
-            idle_contexts().push(IdleContext {
-                raw: self.raw,
-                error_state,
-            });
-        }
+        unsafe { bindings::cupsDNSSDDelete(self.raw) };
     }
-}
-
-fn idle_contexts() -> MutexGuard<'static, Vec<IdleContext>> {
-    IDLE_CONTEXTS
-        .lock()
-        .unwrap_or_else(|poisoned: std::sync::PoisonError<_>| poisoned.into_inner())
 }
 
 pub struct DnssdBrowser {
@@ -374,14 +307,9 @@ impl DnssdServiceResolver {
         while let Ok(service) = self.resolve_receiver.try_recv() {
             let target = (normalize_name(&service.hostname), service.interface_index);
 
-            // A service re-announces itself often, usually saying the same thing.
-            // Replacing the running queries every time creates and destroys DNS-SD
-            // contexts for no new information, which is both wasted work and the
-            // churn that makes libcups' teardown path dangerous. So they are
-            // replaced only when they would ask a different question, or when they
-            // have not answered yet — an announcement is the natural moment to ask
-            // again, and a service whose addresses never arrive is a service that
-            // never gets reported at all.
+            // A service re-announces itself often, usually with nothing new, so the
+            // running queries are only replaced when they'd ask a different question
+            // or haven't answered yet.
             let mut started = Ok(());
             if self.queried.as_ref() == Some(&target) && !self.addresses.is_empty() {
                 // Same host, already answered: only a new port or TXT record is
@@ -402,11 +330,8 @@ impl DnssdServiceResolver {
                 }
             }
 
-            // Recorded whatever happened above, because the announcement has already left the
-            // channel: letting a failure past this point threw the service away entirely, and
-            // nothing else here asks after it — the only thing that would is another announcement,
-            // which may be minutes off or may never come. Remembered with no addresses against it,
-            // the next announcement comes straight back to the branch above and tries again.
+            // Recorded even on failure, so the service isn't lost — the next
+            // announcement, whenever it comes, will retry the query.
             self.resolved = Some(service);
             started?;
         }

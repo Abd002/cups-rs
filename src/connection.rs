@@ -197,7 +197,15 @@ impl HttpConnection {
             return None;
         }
 
-        std::net::IpAddr::from_str(unsafe { CStr::from_ptr(value) }.to_str().ok()?).ok()
+        // CUPS writes an IPv6 address the way a URI carries it, as `[v1.::1]`.
+        let value = unsafe { CStr::from_ptr(value) }.to_str().ok()?;
+        let value = value
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .unwrap_or(value);
+        let value = value.strip_prefix("v1.").unwrap_or(value);
+
+        std::net::IpAddr::from_str(value).ok()
     }
 
     /// Returns the peer port selected for this connection.
@@ -484,6 +492,32 @@ mod tests {
             crate::DEST_FLAGS_NONE
         );
         assert_eq!(u32::from(ConnectionFlags::Device), crate::DEST_FLAGS_DEVICE);
+        // The value this used to send asks not to connect at all, which reaches the
+        // scheduler's copy of the queue instead of the printer.
+        assert_ne!(
+            u32::from(ConnectionFlags::Device),
+            crate::DEST_FLAGS_UNCONNECTED
+        );
+    }
+
+    #[test]
+    fn test_connect_host_reports_its_endpoint() {
+        let connection = HttpConnection::connect_host_with_encryption(
+            "localhost",
+            631,
+            "/",
+            EncryptionMode::IfRequested,
+            Some(1000),
+        );
+        let Ok(connection) = connection else {
+            // No scheduler listening in this environment, which is OK.
+            return;
+        };
+
+        assert!(connection.is_connected());
+        assert_eq!(connection.resource_path(), "/");
+        assert_eq!(connection.port(), Some(631));
+        assert!(connection.address().is_some());
     }
 
     #[test]

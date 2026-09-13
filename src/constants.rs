@@ -1,6 +1,5 @@
 //! Constants for CUPS options and values
 
-#[cfg(cups3)]
 use crate::bindings;
 
 // Destination flags
@@ -24,6 +23,10 @@ pub const DEST_FLAGS_ERROR: u32 = 1 << 2;
 pub const DEST_FLAGS_DEVICE: u32 = bindings::cups_dest_flags_e_CUPS_DEST_FLAGS_DEVICE;
 #[cfg(cups2)]
 pub const DEST_FLAGS_DEVICE: u32 = 1 << 3;
+#[cfg(cups3)]
+pub const DEST_FLAGS_UNCONNECTED: u32 = bindings::cups_dest_flags_e_CUPS_DEST_FLAGS_UNCONNECTED;
+#[cfg(cups2)]
+pub const DEST_FLAGS_UNCONNECTED: u32 = bindings::CUPS_DEST_FLAGS_UNCONNECTED;
 
 // Printer types
 #[cfg(cups3)]
