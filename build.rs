@@ -50,7 +50,10 @@ fn main() {
         // Allow IPP types and functions
         .allowlist_function("ipp.*")
         .allowlist_type("ipp_.*")
-        .allowlist_var("IPP_.*");
+        .allowlist_var("IPP_.*")
+        // CUPS 3 headers take `FILE *` parameters. Rust only passes the pointer around,
+        // so keep the struct opaque instead of generating glibc's internal fields.
+        .opaque_type("_IO_FILE");
 
     // Lets wrapper.h include cups/dnssd.h, which only CUPS 3 has.
     if cups_cfg == "cups3" {
